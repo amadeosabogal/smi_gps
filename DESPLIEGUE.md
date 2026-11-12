@@ -20,6 +20,7 @@ Copia `service/.env.example` a `service/.env` y completa los valores. **Nunca su
 | `TRUST_PROXY=1` | Si hay un proxy inverso delante |
 | `FACE_MATCH_THRESHOLD` | Umbral de coincidencia facial (0.58 por defecto; más bajo = más estricto) |
 | `ALLOW_SELF_ENROL=false` | Opcional: obliga a que solo un administrador enrole rostros |
+| `LOGIN_IP_MAX` | Intentos de login **fallidos** permitidos por IP cada 10 min (60 por defecto). Toda una planta suele compartir IP, así que debe ser alto; cada cuenta se protege aparte (8 fallos / 15 min) |
 
 Generar un `JWT_SECRET`:
 ```bash
@@ -32,6 +33,11 @@ npm install
 npm run migrate-security      # amplía la columna pin y convierte los PIN a hash
 ```
 Prueba primero sin cambiar nada: `node service/migrate-security.mjs --dry-run`.
+
+Impide que un trabajador tenga dos turnos activos a la vez (doble toque, dos dispositivos):
+```bash
+npm run migrate-turnos        # primero revisa si hay duplicados; con --dry-run solo simula
+```
 
 Después **cambia todos los PIN por defecto** (el script anterior te lista quiénes los tienen):
 ```bash
@@ -50,6 +56,13 @@ Opciones de compilación del frontend (`client/.env`, se leen al hacer `build`):
 - `VITE_GOOGLE_MAPS_API_KEY`: clave de Google Maps. **Restríngela por dominio** en Google Cloud Console.
 - `VITE_ENABLE_SIMULATION=true`: muestra los botones de "Simular movimiento" (pruebas de geocerca en interiores). **Déjalo apagado en producción real**: permite que un trabajador marque estar en cualquier estación.
 - `VITE_API_BASE_URL`: solo para la app móvil Capacitor (ej. `https://asistencia.tuempresa.com`).
+
+### Rendimiento con muchos trabajadores a la vez
+- Las listas del panel **no incluyen fotos**: se piden una por una al verlas (`/api/photos/...`, solo para administradores).
+- El panel pide el estado en vivo cada 3 s (liviano) y los listados completos cada 30 s o, tras un grupo de marcas, en **una sola** recarga.
+- El login no congela el servidor: el hash del PIN se calcula en hilos aparte.
+- Entrada y salida se guardan en una transacción: si algo falla, no queda nada a medias.
+- Si ves que PM2 reinicia el servidor por memoria, sube `max_memory_restart` en `ecosystem.config.cjs`.
 
 ## 5. Qué protege el sistema
 - Los PIN se guardan con hash (scrypt); el login se bloquea tras varios intentos fallidos.

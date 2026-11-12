@@ -55,6 +55,9 @@ export const auth = {
   },
 };
 
+// Caché de fotos ya descargadas (ruta -> URL local del navegador). Las fotos de asistencia no cambian nunca.
+const photoCache = new Map<string, Promise<string>>();
+
 // Ticket de verificación facial (un solo uso): lo entrega el servidor tras reconocer el rostro
 let bioTicket: string | null = null;
 
@@ -112,6 +115,28 @@ export const api = {
   logout() {
     auth.clear();
     bioTicket = null;
+    photoCache.forEach((p) => p.then((url) => URL.revokeObjectURL(url)).catch(() => {}));
+    photoCache.clear();
+  },
+
+  /** Descarga una foto protegida (con la sesión) y devuelve una URL local lista para <img src>. */
+  fetchPhoto(path: string): Promise<string> {
+    let pending = photoCache.get(path);
+    if (!pending) {
+      pending = (async () => {
+        const token = auth.getToken();
+        const res = await fetch(`${getApiBase()}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+        if (res.status === 401 && token) {
+          auth.clear();
+          window.dispatchEvent(new Event('smi:unauthorized'));
+        }
+        if (!res.ok) throw new Error('Foto no disponible');
+        return URL.createObjectURL(await res.blob());
+      })();
+      photoCache.set(path, pending);
+      pending.catch(() => photoCache.delete(path)); // reintentar la próxima vez si falló
+    }
+    return pending;
   },
 
   async getMyShift(): Promise<any | null> {

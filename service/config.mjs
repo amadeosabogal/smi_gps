@@ -43,6 +43,8 @@ export const config = {
   corsOrigins: (env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
   // Umbral de distancia euclidiana para considerar que dos rostros son la misma persona
   faceMatchThreshold: Number(env.FACE_MATCH_THRESHOLD || 0.58),
+  // Intentos de login FALLIDOS por IP en 10 min. Alto a propósito: toda una planta suele salir por la misma IP.
+  loginIpMax: Number(env.LOGIN_IP_MAX || 60),
   sessionHours: Number(env.SESSION_HOURS || 12),
   adminSessionHours: Number(env.ADMIN_SESSION_HOURS || 8),
   // TLS opcional directo en Node (si no se usa un proxy inverso como nginx/Caddy)

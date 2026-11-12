@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { setOptions, importLibrary } from '@googlemaps/js-api-loader';
 import type { EstacionTrabajo, DatosTrabajadorEnVivo } from '../types';
+import { api } from '../services/api';
 import { Key, AlertTriangle, Layers, ExternalLink } from 'lucide-react';
 
 function escapeXml(unsafe: string) {
@@ -264,7 +265,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
         ? new Date(worker.hora_ingreso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         : '--:--';
 
-      const workerContent = `
+      const buildContent = (photoUrl: string | null) => `
         <div style="font-family: Archivo, sans-serif; padding: 6px; min-width: 220px;">
           <div style="display: flex; justify-content: space-between; align-items: start;">
             <div>
@@ -300,10 +301,10 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
           </div>
 
           ${
-            worker.foto_ingreso_url
+            photoUrl
               ? `<div style="margin-top: 8px; border-top: 1px solid #F1F5F9; padding-top: 6px; text-align: center;">
                   <span style="font-size: 10px; font-weight: bold; color: #475569; display: block; margin-bottom: 4px;">📸 Evidencia Fotográfica de Entrada</span>
-                  <img src="${worker.foto_ingreso_url}" style="width: 100%; max-height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #E2E8F0;" />
+                  <img src="${photoUrl}" style="width: 100%; max-height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #E2E8F0;" />
                 </div>`
               : ''
           }
@@ -312,8 +313,18 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
 
       marker.addListener('click', () => {
         if (infoWindowRef.current) {
-          infoWindowRef.current.setContent(workerContent);
-          infoWindowRef.current.open(map, marker);
+          const infoWindow = infoWindowRef.current;
+          infoWindow.setContent(buildContent(null));
+          infoWindow.open(map, marker);
+          // La foto se descarga solo al abrir la ventana y se agrega cuando llega
+          if (worker.tiene_foto_ingreso && worker.asistencia_id) {
+            api
+              .fetchPhoto(`/photos/attendance/${worker.asistencia_id}/in`)
+              .then((url) => {
+                if (infoWindowRef.current === infoWindow) infoWindow.setContent(buildContent(url));
+              })
+              .catch(() => {});
+          }
         }
         if (onSelectWorker) onSelectWorker(worker);
       });

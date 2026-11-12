@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { MapContainer, TileLayer, Circle, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import type { EstacionTrabajo, DatosTrabajadorEnVivo } from '../types';
+import { AuthImage } from './AuthImage';
 import { ShieldCheck, AlertTriangle, Clock, Crosshair } from 'lucide-react';
 
 interface LiveMapProps {
@@ -208,12 +209,13 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                       </span>
                     </div>
 
-                    {trabajador.foto_ingreso_url && (
+                    {trabajador.tiene_foto_ingreso && trabajador.asistencia_id && (
                       <div className="mt-2 pt-2 border-t border-slate-100 text-center">
                         <span className="text-[10px] font-bold text-slate-500 block mb-1">📸 Evidencia de Ingreso</span>
-                        <img
-                          src={trabajador.foto_ingreso_url}
+                        <AuthImage
+                          path={`/photos/attendance/${trabajador.asistencia_id}/in`}
                           alt="Evidencia Ingreso"
+                          eager
                           className="w-full h-24 object-cover rounded-lg border border-slate-200"
                         />
                       </div>

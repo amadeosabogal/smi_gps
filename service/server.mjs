@@ -12,7 +12,8 @@ import sql from 'mssql';
 import { dbConfig, jwtSecret, config, isProduction } from './config.mjs';
 import {
   hashPin,
-  verifyPin,
+  hashPinAsync,
+  verifyPinAsync,
   signToken,
   verifyToken,
   createLimiter,
@@ -162,13 +163,33 @@ const optNum = (v) => (isNum(v) ? v : null);
 const validPhoto = (s, maxChars = 4_000_000) =>
   typeof s === 'string' && s.length <= maxChars && /^data:image\/(jpeg|png|webp);base64,/.test(s);
 
+// Quita las fotos (base64) de un registro antes de enviarlo por socket o responder al celular:
+// pesan ~100 KB cada una y 30 marcas simultáneas multiplicarían ese tráfico por cada administrador conectado.
+function sinFotos(registro) {
+  if (!registro) return registro;
+  const { foto_ingreso_url, foto_salida_url, ...resto } = registro;
+  return { ...resto, tiene_foto_ingreso: Boolean(foto_ingreso_url), tiene_foto_salida: Boolean(foto_salida_url) };
+}
+
+// Entrega una foto guardada como data URL como imagen binaria (más liviana que base64 dentro de JSON)
+function enviarFoto(res, dataUrl) {
+  const m = typeof dataUrl === 'string' ? dataUrl.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/s) : null;
+  if (!m) return res.status(404).json({ error: 'Foto no disponible' });
+  res.setHeader('Content-Type', m[1]);
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  return res.send(Buffer.from(m[2], 'base64'));
+}
+
+// ¿El error es por intentar crear un segundo turno activo? (índice único UX_RegistroAsistencia_turno_activo)
+const esTurnoDuplicado = (err) => err && (err.number === 2601 || err.number === 2627);
+
 // Emitir solo a administradores/supervisores conectados
 const emitStaff = (event, payload) => io.to('staff').emit(event, payload);
 
 // ---------------------------------------------------------------------------
 // Autenticación
 // ---------------------------------------------------------------------------
-const loginIpLimiter = createLimiter({ max: 10, windowMs: 10 * 60 * 1000 });
+const loginIpLimiter = createLimiter({ max: config.loginIpMax, windowMs: 10 * 60 * 1000 });
 const loginUserLimiter = createLimiter({ max: 8, windowMs: 15 * 60 * 1000 });
 const faceFailLimiter = createLimiter({ max: 5, windowMs: 10 * 60 * 1000 });
 
@@ -233,14 +254,10 @@ async function doLogin(req, res, { findUser, allowedRoles, ttlHours, secretValue
     return res.status(429).json({ error: `Cuenta bloqueada temporalmente. Intenta en ${Math.ceil(userBlocked / 60)} min.` });
   }
 
-  const ok =
-    typeof secretValue === 'string' &&
-    secretValue.length > 0 &&
-    secretValue.length <= 100 &&
-    verifyPin(secretValue, user?.pin || DUMMY_HASH) &&
-    Boolean(user?.pin) &&
-    user.activo &&
-    allowedRoles.includes(user.rol);
+  const secretOk = typeof secretValue === 'string' && secretValue.length > 0 && secretValue.length <= 100;
+  // Siempre se calcula el hash (aunque el usuario no exista) para igualar tiempos de respuesta
+  const pinOk = secretOk ? await verifyPinAsync(secretValue, user?.pin || DUMMY_HASH) : false;
+  const ok = pinOk && Boolean(user?.pin) && user.activo && allowedRoles.includes(user.rol);
 
   if (!ok) {
     loginIpLimiter.fail(ipKey);
@@ -454,8 +471,12 @@ app.get('/api/users', requireAuth(ROLES_STAFF), async (req, res) => {
   try {
     const p = await getPool();
     // Nunca se envían el PIN ni el descriptor facial al navegador
+    // La foto de referencia NO viaja en la lista (pesa cientos de KB por usuario): se pide aparte en
+    // /api/photos/user/:id/reference. foto_ref_bytes sirve de versión para el caché del navegador.
     const result = await p.request().query(
-      'SELECT id, codigo_empleado, nombre, correo, rol, cargo, telefono, activo, foto_referencia_url, facial_enrolado FROM Usuarios'
+      `SELECT id, codigo_empleado, nombre, correo, rol, cargo, telefono, activo, facial_enrolado,
+              ISNULL(DATALENGTH(foto_referencia_url), 0) AS foto_ref_bytes
+         FROM Usuarios`
     );
     res.json(result.recordset);
   } catch (err) {
@@ -491,7 +512,7 @@ app.post('/api/users', requireAuth(ROLES_ADMIN), async (req, res) => {
       .input('codigo', sql.VarChar(50), String(codigo_empleado).slice(0, 50))
       .input('nombre', sql.NVarChar(150), String(nombre).slice(0, 150))
       .input('correo', sql.VarChar(150), String(email).slice(0, 150))
-      .input('pin', sql.VarChar(200), hashPin(pinInicial))
+      .input('pin', sql.VarChar(200), await hashPinAsync(pinInicial))
       .input('cargo', sql.NVarChar(100), String(cargo || 'Operador de Campo').slice(0, 100))
       .input('telefono', sql.VarChar(30), String(telefono || '').slice(0, 30))
       .query(`
@@ -663,7 +684,7 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
     const result = await p.request().query(`
       SELECT
         u.id as usuario_id, u.codigo_empleado, u.nombre as nombre_usuario, u.cargo, u.telefono,
-        a.id as asistencia_id, a.hora_ingreso, a.foto_ingreso_url, a.estado as estado_asistencia,
+        a.id as asistencia_id, a.hora_ingreso, CASE WHEN a.foto_ingreso_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_ingreso, a.estado as estado_asistencia,
         uv.latitud, uv.longitud, uv.precision, uv.ultimo_ping, uv.dentro_de_estacion,
         e.id as estacion_id, e.nombre as estacion_nombre, e.codigo as estacion_codigo, e.color as estacion_color
       FROM Usuarios u
@@ -751,6 +772,9 @@ app.post('/api/attendance/check-in', requireAuth(ROLES_WORKER), async (req, res)
       .input('similitud', sql.Float, bio.sim)
       .input('dentro', sql.Bit, geo.dentroDeEstacion ? 1 : 0)
       .query(`
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+
         DECLARE @TempAsistencia TABLE (
           id INT, usuario_id INT, hora_ingreso DATETIME, latitud_ingreso FLOAT, longitud_ingreso FLOAT,
           precision_ingreso FLOAT, estacion_ingreso_id INT, foto_ingreso_url NVARCHAR(MAX),
@@ -787,15 +811,20 @@ app.post('/api/attendance/check-in', requireAuth(ROLES_WORKER), async (req, res)
         INSERT INTO HistorialUbicaciones (usuario_id, asistencia_id, latitud, longitud, precision, estacion_id)
         VALUES (@usuarioId, @asistId, @lat, @lng, @acc, @estId);
 
+        COMMIT TRANSACTION;
+
         SELECT * FROM @TempAsistencia;
       `);
 
-    const registro = registroResultado.recordset[0];
+    const registro = sinFotos(registroResultado.recordset[0]);
     console.log(`🔔 [CHECK_IN] Usuario ${usuarioId} registró ENTRADA (similitud ${bio.sim}%).`);
     emitStaff('attendance_event', { tipo: 'CHECK_IN', usuarioId, asistencia: registro, geocerca: geo, fecha: new Date().toISOString() });
 
     res.json({ exito: true, asistencia: registro, geocerca: geo });
   } catch (err) {
+    if (esTurnoDuplicado(err)) {
+      return res.status(400).json({ error: 'Ya existe un turno activo para este trabajador' });
+    }
     fail(res, err);
   }
 });
@@ -838,6 +867,9 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
       .input('foto', sql.NVarChar(sql.MAX), fotoSalida)
       .input('similitud', sql.Float, bio.sim)
       .query(`
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+
         UPDATE RegistroAsistencia
         SET hora_salida = GETDATE(),
             latitud_salida = @lat, longitud_salida = @lng, precision_salida = @acc,
@@ -850,9 +882,11 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
         WHERE id = @id;
 
         UPDATE UbicacionesEnVivo SET activo = 0, ultimo_ping = GETDATE() WHERE usuario_id = @usuarioId;
+
+        COMMIT TRANSACTION;
       `);
 
-    const registroCompletado = resActualizacion.recordset[0];
+    const registroCompletado = sinFotos(resActualizacion.recordset[0]);
     console.log(`🔔 [CHECK_OUT] Usuario ${usuarioId} registró SALIDA.`);
     emitStaff('attendance_event', { tipo: 'CHECK_OUT', usuarioId, asistencia: registroCompletado, fecha: new Date().toISOString() });
 
@@ -921,13 +955,16 @@ app.post('/api/location/ping', requireAuth(ROLES_WORKER), async (req, res) => {
 
 app.get('/api/attendance/logs', requireAuth(ROLES_STAFF), async (req, res) => {
   try {
-    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 300, 1), 1000);
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 200, 1), 1000);
     const p = await getPool();
     const result = await p.request().input('limit', sql.Int, limit).query(`
       SELECT TOP (@limit)
-        a.id, a.usuario_id, u.nombre as nombre_usuario, u.codigo_empleado, u.cargo, u.foto_referencia_url,
+        a.id, a.usuario_id, u.nombre as nombre_usuario, u.codigo_empleado, u.cargo,
+        ISNULL(DATALENGTH(u.foto_referencia_url), 0) AS foto_ref_bytes,
         a.hora_ingreso, a.hora_salida, a.latitud_ingreso, a.longitud_ingreso, a.latitud_salida, a.longitud_salida,
-        a.foto_ingreso_url, a.foto_salida_url, a.similitud_facial, a.verificacion_facial_exitosa,
+        CASE WHEN a.foto_ingreso_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_ingreso,
+        CASE WHEN a.foto_salida_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_salida,
+        a.similitud_facial, a.verificacion_facial_exitosa,
         a.metodo_validacion, a.estado, a.horas_totales,
         eIng.nombre as estacion_ingreso_nombre, eSal.nombre as estacion_salida_nombre
       FROM RegistroAsistencia a
@@ -949,12 +986,58 @@ app.get('/api/attendance/fraud-logs', requireAuth(ROLES_STAFF), async (req, res)
     const result = await p.request().input('limit', sql.Int, limit).query(`
       SELECT TOP (@limit)
         f.id, f.usuario_id, u.nombre as nombre_usuario, u.codigo_empleado, u.cargo,
-        f.fecha_intento, f.tipo_evento, f.foto_intento_url, f.similitud_obtenida, f.latitud, f.longitud, f.notas
+        f.fecha_intento, f.tipo_evento, CASE WHEN f.foto_intento_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_intento,
+        f.similitud_obtenida, f.latitud, f.longitud, f.notas
       FROM AuditoriaFraudeFacial f
       JOIN Usuarios u ON f.usuario_id = u.id
       ORDER BY f.fecha_intento DESC;
     `);
     res.json(result.recordset);
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ----------------- FOTOS BAJO DEMANDA (administración) -----------------
+// Las listas ya no incluyen las fotos: el panel las pide una por una, solo cuando se ven.
+
+const idParam = (v) => {
+  const n = Number.parseInt(v, 10);
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
+
+app.get('/api/photos/attendance/:id/:kind', requireAuth(ROLES_STAFF), async (req, res) => {
+  try {
+    const id = idParam(req.params.id);
+    const columna = { in: 'foto_ingreso_url', out: 'foto_salida_url' }[req.params.kind];
+    if (!id || !columna) return res.status(400).json({ error: 'Solicitud inválida' });
+    const p = await getPool();
+    const r = await p.request().input('id', sql.Int, id).query(`SELECT ${columna} AS foto FROM RegistroAsistencia WHERE id = @id`);
+    enviarFoto(res, r.recordset[0]?.foto);
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.get('/api/photos/user/:id/reference', requireAuth(ROLES_STAFF), async (req, res) => {
+  try {
+    const id = idParam(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Solicitud inválida' });
+    const p = await getPool();
+    const r = await p.request().input('id', sql.Int, id).query('SELECT foto_referencia_url AS foto FROM Usuarios WHERE id = @id');
+    enviarFoto(res, r.recordset[0]?.foto);
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.get('/api/photos/fraud/:id', requireAuth(ROLES_STAFF), async (req, res) => {
+  try {
+    const id = idParam(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Solicitud inválida' });
+    const p = await getPool();
+    const r = await p.request().input('id', sql.Int, id).query('SELECT foto_intento_url AS foto FROM AuditoriaFraudeFacial WHERE id = @id');
+    enviarFoto(res, r.recordset[0]?.foto);
   } catch (err) {
     fail(res, err);
   }

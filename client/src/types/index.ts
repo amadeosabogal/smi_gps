@@ -7,7 +7,7 @@ export interface Usuario {
   cargo: string;
   telefono?: string;
   activo: boolean;
-  foto_referencia_url?: string | null;
+  foto_ref_bytes?: number; // tamaño de la foto de referencia (0 = sin foto); la imagen se pide aparte
   facial_enrolado?: boolean;
 }
 
@@ -39,9 +39,9 @@ export interface RegistroAsistencia {
   longitud_salida?: number;
   precision_salida?: number;
   estacion_salida_nombre?: string;
-  foto_ingreso_url?: string | null;
-  foto_salida_url?: string | null;
-  foto_referencia_url?: string | null;
+  tiene_foto_ingreso?: boolean;
+  tiene_foto_salida?: boolean;
+  foto_ref_bytes?: number;
   similitud_facial?: number | null;
   verificacion_facial_exitosa?: boolean | null;
   metodo_validacion?: string | null;
@@ -58,7 +58,7 @@ export interface AuditoriaFraudeFacial {
   cargo?: string;
   fecha_intento: string;
   tipo_evento: string;
-  foto_intento_url?: string | null;
+  tiene_foto_intento?: boolean;
   similitud_obtenida?: number | null;
   latitud?: number | null;
   longitud?: number | null;
@@ -73,7 +73,7 @@ export interface DatosTrabajadorEnVivo {
   telefono?: string;
   asistencia_id: number | null;
   hora_ingreso: string | null;
-  foto_ingreso_url?: string | null;
+  tiene_foto_ingreso?: boolean;
   estado_asistencia: 'activo' | null;
   latitud: number | null;
   longitud: number | null;

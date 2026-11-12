@@ -1,6 +1,9 @@
 // Utilidades de autenticación: hash de PIN, tokens firmados y limitador de intentos.
 // Solo usa el módulo crypto de Node (sin dependencias nuevas).
 import crypto from 'crypto';
+import { promisify } from 'util';
+
+const scryptAsync = promisify(crypto.scrypt);
 
 // ---------- PIN ----------
 const SCRYPT_PREFIX = 'scrypt$';
@@ -29,6 +32,28 @@ export function verifyPin(pin, stored) {
     if (!saltHex || !hashHex) return false;
     const expected = Buffer.from(hashHex, 'hex');
     const actual = crypto.scryptSync(String(pin), Buffer.from(saltHex, 'hex'), expected.length);
+    return crypto.timingSafeEqual(actual, expected);
+  }
+  return safeEqual(pin, stored);
+}
+
+/**
+ * Versiones asíncronas (usan el hilo de trabajo de libuv): no congelan el servidor mientras se calcula el hash.
+ * Usar estas en el servidor; las síncronas quedan para scripts de línea de comandos.
+ */
+export async function hashPinAsync(pin) {
+  const salt = crypto.randomBytes(16);
+  const hash = await scryptAsync(String(pin), salt, 32);
+  return `${SCRYPT_PREFIX}${salt.toString('hex')}$${Buffer.from(hash).toString('hex')}`;
+}
+
+export async function verifyPinAsync(pin, stored) {
+  if (pin === undefined || pin === null || !stored) return false;
+  if (isHashedPin(stored)) {
+    const [, saltHex, hashHex] = stored.split('$');
+    if (!saltHex || !hashHex) return false;
+    const expected = Buffer.from(hashHex, 'hex');
+    const actual = Buffer.from(await scryptAsync(String(pin), Buffer.from(saltHex, 'hex'), expected.length));
     return crypto.timingSafeEqual(actual, expected);
   }
   return safeEqual(pin, stored);

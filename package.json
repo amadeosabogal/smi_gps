@@ -20,7 +20,8 @@
     "start:prod": "node service/server.mjs",
     "build:prod": "npm run build --prefix client",
     "migrate-security": "node service/migrate-security.mjs",
-    "set-pin": "node service/set-pin.mjs"
+    "set-pin": "node service/set-pin.mjs",
+    "migrate-turnos": "node service/migrate-turnos.mjs"
   },
   "dependencies": {
     "@capacitor/app": "^8.1.2",

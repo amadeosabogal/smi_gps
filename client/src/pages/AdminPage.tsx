@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api, auth } from '../services/api';
 import { socket, connectSocket, disconnectSocket } from '../services/socket';
 import { LiveMap } from '../components/LiveMap';
 import { GoogleLiveMap } from '../components/GoogleLiveMap';
 import { EnrolFaceModal } from '../components/EnrolFaceModal';
+import { AuthImage } from '../components/AuthImage';
 import type {
   EstacionTrabajo,
   ResumenDashboard,
@@ -195,30 +196,68 @@ export const AdminPage: React.FC = () => {
     }
   };
 
-  // Load data from backend
-  const loadData = useCallback(async () => {
-    try {
-      const [stationsData, logsData, liveData, usersData, fraudData] = await Promise.all([
-        api.getWorkstations(),
-        api.getAttendanceLogs(),
-        api.getLiveDashboard(),
-        api.getUsers(),
-        api.getFraudLogs(),
-      ]);
+  // --- Carga de datos ---------------------------------------------------------------------------
+  // Antes TODO (historial con fotos incluido) se pedía cada 3 s y en cada evento: con 30 marcas casi
+  // simultáneas eso saturaba el servidor. Ahora:
+  //   - Estado en vivo (liviano): cada 3 s.
+  //   - Listados completos (estaciones, historial, usuarios, alertas): cada 30 s, y agrupados en una sola
+  //     recarga cuando llegan eventos (un lote de 30 marcas = 1 recarga, no 30).
+  //   - Las fotos ya no viajan en los listados: se piden una por una al verlas.
+  const liveInFlight = useRef<boolean>(false);
+  const heavyInFlight = useRef<boolean>(false);
+  const heavyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-      setWorkstations(stationsData);
-      setAttendanceLogs(logsData);
+  const loadLive = useCallback(async () => {
+    if (liveInFlight.current) return; // no apilar peticiones si la red va lenta
+    liveInFlight.current = true;
+    try {
+      const liveData = await api.getLiveDashboard();
       setLiveWorkers(liveData.trabajadores);
-      if (liveData.ahora) setClockOffsetMs(new Date(liveData.ahora).getTime() - Date.now());
       setSummary(liveData.resumen);
-      setWorkersList(usersData);
-      setFraudLogs(fraudData);
+      if (liveData.ahora) setClockOffsetMs(new Date(liveData.ahora).getTime() - Date.now());
     } catch (err) {
-      console.error('Error cargando datos del panel admin:', err);
+      console.error('Error cargando estado en vivo:', err);
     } finally {
+      liveInFlight.current = false;
       setLoading(false);
     }
   }, []);
+
+  const loadHeavy = useCallback(async () => {
+    if (heavyInFlight.current) return;
+    heavyInFlight.current = true;
+    try {
+      const [stationsData, logsData, usersData, fraudData] = await Promise.all([
+        api.getWorkstations(),
+        api.getAttendanceLogs(),
+        api.getUsers(),
+        api.getFraudLogs(),
+      ]);
+      setWorkstations(stationsData);
+      setAttendanceLogs(logsData);
+      setWorkersList(usersData);
+      setFraudLogs(fraudData);
+    } catch (err) {
+      console.error('Error cargando listados del panel admin:', err);
+    } finally {
+      heavyInFlight.current = false;
+      setLoading(false);
+    }
+  }, []);
+
+  // Agrupa muchas notificaciones seguidas en una sola recarga de listados
+  const scheduleHeavyReload = useCallback(() => {
+    if (heavyTimer.current) clearTimeout(heavyTimer.current);
+    heavyTimer.current = setTimeout(() => {
+      heavyTimer.current = null;
+      loadHeavy();
+    }, 1500);
+  }, [loadHeavy]);
+
+  // Recarga completa (tras crear/editar algo desde el panel)
+  const loadData = useCallback(async () => {
+    await Promise.all([loadLive(), loadHeavy()]);
+  }, [loadLive, loadHeavy]);
 
   useEffect(() => {
     if (!isAdminAuthenticated) return;
@@ -228,10 +267,13 @@ export const AdminPage: React.FC = () => {
 
     loadData();
 
-    // Sincronización continua de respaldo cada 3 segundos
+    // Sincronización de respaldo: estado en vivo cada 3 s (liviano) y listados completos cada 30 s
     const syncInterval = setInterval(() => {
-      loadData();
+      loadLive();
     }, 3000);
+    const heavyInterval = setInterval(() => {
+      loadHeavy();
+    }, 30000);
 
     const onConnect = () => {
       console.log('⚡ Socket conectado al panel admin');
@@ -271,7 +313,8 @@ export const AdminPage: React.FC = () => {
     // Evento de Registro de Asistencia (Entrada / Salida)
     socket.on('attendance_event', (eventData: any) => {
       console.log('🔔 Evento de asistencia recibido en socket:', eventData);
-      loadData();
+      loadLive();
+      scheduleHeavyReload();
 
       const ahora = new Date().toLocaleTimeString();
       if (eventData?.tipo === 'CHECK_IN') {
@@ -290,7 +333,7 @@ export const AdminPage: React.FC = () => {
     // Evento de Alerta de Fraude Facial
     socket.on('fraud_alert', (fraudEvent: any) => {
       console.warn('🚨 Alerta de fraude facial recibida:', fraudEvent);
-      loadData();
+      scheduleHeavyReload();
       const ahora = new Date().toLocaleTimeString();
       setRecentNotification({
         texto: `🚨 ALERTA: Intento de suplantación facial detectado (${
@@ -303,7 +346,7 @@ export const AdminPage: React.FC = () => {
     // Evento de Enrolamiento Facial
     socket.on('user_face_enrolled', (data: any) => {
       console.log('👤 Rostro enrolado en tiempo real:', data);
-      loadData();
+      scheduleHeavyReload();
     });
 
     socket.on('workstations_updated', (newStation: EstacionTrabajo) => {
@@ -312,6 +355,8 @@ export const AdminPage: React.FC = () => {
 
     return () => {
       clearInterval(syncInterval);
+      clearInterval(heavyInterval);
+      if (heavyTimer.current) clearTimeout(heavyTimer.current);
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       socket.off('location_ping');
@@ -320,7 +365,7 @@ export const AdminPage: React.FC = () => {
       socket.off('user_face_enrolled');
       socket.off('workstations_updated');
     };
-  }, [isAdminAuthenticated, loadData]);
+  }, [isAdminAuthenticated, loadData, loadLive, loadHeavy, scheduleHeavyReload]);
 
   // Ingreso de administrador: el servidor valida código + clave (con límite de intentos)
   const handleAdminLogin = async (e: React.FormEvent) => {
@@ -1001,25 +1046,27 @@ export const AdminPage: React.FC = () => {
                               </span>
                             </td>
                             <td className="px-4 py-3 text-center">
-                              {log.foto_ingreso_url ? (
+                              {log.tiene_foto_ingreso ? (
                                 <button
                                   type="button"
                                   onClick={() =>
                                     setPhotoPreview({
-                                      url: log.foto_ingreso_url!,
+                                      url: `/photos/attendance/${log.id}/in`,
                                       workerName: log.nombre_usuario,
                                       type: 'entrada',
                                       date: log.hora_ingreso,
                                       stationName: log.estacion_ingreso_nombre,
-                                      referencePhotoUrl: log.foto_referencia_url,
+                                      referencePhotoUrl: log.foto_ref_bytes
+                                        ? `/photos/user/${log.usuario_id}/reference?v=${log.foto_ref_bytes}`
+                                        : null,
                                       similarity: log.similitud_facial,
                                     })
                                   }
                                   title="Ver evidencia de entrada"
                                   className="group relative inline-flex items-center justify-center p-0.5 rounded-lg border-2 border-emerald-500 hover:border-emerald-600 bg-emerald-50 transition transform hover:scale-105 cursor-pointer shadow-sm"
                                 >
-                                  <img
-                                    src={log.foto_ingreso_url}
+                                  <AuthImage
+                                    path={`/photos/attendance/${log.id}/in`}
                                     alt="Foto Entrada"
                                     className="w-10 h-10 object-cover rounded-md"
                                   />
@@ -1045,25 +1092,27 @@ export const AdminPage: React.FC = () => {
                               </span>
                             </td>
                             <td className="px-4 py-3 text-center">
-                              {log.foto_salida_url ? (
+                              {log.tiene_foto_salida ? (
                                 <button
                                   type="button"
                                   onClick={() =>
                                     setPhotoPreview({
-                                      url: log.foto_salida_url!,
+                                      url: `/photos/attendance/${log.id}/out`,
                                       workerName: log.nombre_usuario,
                                       type: 'salida',
                                       date: log.hora_salida,
                                       stationName: log.estacion_salida_nombre,
-                                      referencePhotoUrl: log.foto_referencia_url,
+                                      referencePhotoUrl: log.foto_ref_bytes
+                                        ? `/photos/user/${log.usuario_id}/reference?v=${log.foto_ref_bytes}`
+                                        : null,
                                       similarity: log.similitud_facial,
                                     })
                                   }
                                   title="Ver evidencia de salida"
                                   className="group relative inline-flex items-center justify-center p-0.5 rounded-lg border-2 border-rose-500 hover:border-rose-600 bg-rose-50 transition transform hover:scale-105 cursor-pointer shadow-sm"
                                 >
-                                  <img
-                                    src={log.foto_salida_url}
+                                  <AuthImage
+                                    path={`/photos/attendance/${log.id}/out`}
                                     alt="Foto Salida"
                                     className="w-10 h-10 object-cover rounded-md"
                                   />
@@ -1171,9 +1220,9 @@ export const AdminPage: React.FC = () => {
                           <div>
                             <div className="flex items-start justify-between gap-3">
                               <div className="flex items-center space-x-3">
-                                {worker.foto_referencia_url ? (
-                                  <img
-                                    src={worker.foto_referencia_url}
+                                {worker.foto_ref_bytes ? (
+                                  <AuthImage
+                                    path={`/photos/user/${worker.id}/reference?v=${worker.foto_ref_bytes}`}
                                     alt={worker.nombre}
                                     className="w-12 h-12 rounded-xl object-cover border-2 border-emerald-500 shadow-sm flex-shrink-0"
                                   />
@@ -1323,12 +1372,12 @@ export const AdminPage: React.FC = () => {
                                 <p className="text-[9px] text-slate-400">Mínimo: 60%</p>
                               </td>
                               <td className="px-4 py-3 text-center">
-                                {log.foto_intento_url ? (
+                                {log.tiene_foto_intento ? (
                                   <button
                                     type="button"
                                     onClick={() =>
                                       setPhotoPreview({
-                                        url: log.foto_intento_url!,
+                                        url: `/photos/fraud/${log.id}`,
                                         workerName: log.nombre_usuario,
                                         type: 'entrada',
                                         date: log.fecha_intento,
@@ -1337,8 +1386,8 @@ export const AdminPage: React.FC = () => {
                                     }
                                     className="group relative inline-flex items-center justify-center p-0.5 rounded-lg border-2 border-rose-500 hover:border-rose-600 bg-rose-50 transition transform hover:scale-105 cursor-pointer shadow-sm"
                                   >
-                                    <img
-                                      src={log.foto_intento_url}
+                                    <AuthImage
+                                      path={`/photos/fraud/${log.id}`}
                                       alt="Intento Fraudulento"
                                       className="w-10 h-10 object-cover rounded-md"
                                     />
@@ -1616,8 +1665,9 @@ export const AdminPage: React.FC = () => {
                       <UserCheck className="w-3.5 h-3.5" />
                       <span>Rostro Oficial Enrolado</span>
                     </div>
-                    <img
-                      src={photoPreview.referencePhotoUrl}
+                    <AuthImage
+                      eager
+                      path={photoPreview.referencePhotoUrl}
                       alt="Rostro Enrolado"
                       className="max-h-56 w-auto max-w-full rounded-xl border border-slate-600 object-contain shadow-md"
                     />
@@ -1630,8 +1680,9 @@ export const AdminPage: React.FC = () => {
                       <ScanFace className="w-3.5 h-3.5" />
                       <span>Foto en Marcación</span>
                     </div>
-                    <img
-                      src={photoPreview.url}
+                    <AuthImage
+                      eager
+                      path={photoPreview.url}
                       alt="Foto en Marcación"
                       className="max-h-56 w-auto max-w-full rounded-xl border border-slate-600 object-contain shadow-md"
                     />
@@ -1664,9 +1715,7 @@ export const AdminPage: React.FC = () => {
               </div>
             ) : (
               <div className="p-4 flex flex-col items-center justify-center bg-black/50">
-                <img
-                  src={photoPreview.url}
-                  alt={`Evidencia ${photoPreview.type}`}
+                <AuthImage eager path={photoPreview.url} alt={`Evidencia ${photoPreview.type}`}
                   className="max-h-[60vh] w-auto max-w-full rounded-2xl border border-slate-700 shadow-xl object-contain"
                 />
               </div>
@@ -1690,14 +1739,27 @@ export const AdminPage: React.FC = () => {
                   </p>
                 )}
               </div>
-              <a
-                href={photoPreview.url}
-                download={`evidencia_${photoPreview.workerName}_${photoPreview.type}.jpg`}
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    // La foto es protegida: se descarga con la sesión y luego se entrega como archivo
+                    const blobUrl = await api.fetchPhoto(photoPreview.url);
+                    const link = document.createElement('a');
+                    link.href = blobUrl;
+                    link.download = `evidencia_${photoPreview.workerName}_${photoPreview.type}.jpg`;
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                  } catch {
+                    alert('No se pudo descargar la foto.');
+                  }
+                }}
                 className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold flex items-center space-x-1.5 transition text-[11px] self-end sm:self-auto cursor-pointer shadow-md"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Descargar Foto</span>
-              </a>
+              </button>
             </div>
           </div>
         </div>
