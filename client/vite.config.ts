@@ -35,8 +35,11 @@ export default defineConfig({
         short_name: 'SMI Asistencia',
         description: 'Registro de entrada y salida con geolocalización en estaciones de trabajo',
         theme_color: '#1e3a8a',
-        background_color: '#ffffff',
-        display: 'standalone',
+        background_color: '#0f172a',
+        // Pantalla completa: oculta la barra superior (hora, batería) y la de navegación en Android.
+        // display_override prueba 'fullscreen' primero y, si el sistema no la admite, usa 'standalone'.
+        display: 'fullscreen',
+        display_override: ['fullscreen', 'standalone'],
         orientation: 'portrait',
         icons: [
           {

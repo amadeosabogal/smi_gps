@@ -584,9 +584,12 @@ export const WorkerPage: React.FC = () => {
 
   // Main Worker Clock-In/Out Interface
   return (
-    <div className="min-h-screen bg-slate-900 flex flex-col font-sans text-slate-100">
+    <div
+      className="min-h-screen bg-slate-900 flex flex-col font-sans text-slate-100"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+    >
       {/* Worker App Header (Dedicated, No Admin Links) */}
-      <header className="bg-slate-950/90 border-b border-slate-800 sticky top-0 z-40 backdrop-blur-md px-4 py-3 flex items-center justify-between">
+      <header className="bg-slate-950/90 border-b border-slate-800 sticky top-0 z-40 backdrop-blur-md px-4 pb-3 pt-[calc(env(safe-area-inset-top)_+_0.75rem)] flex items-center justify-between">
         <div className="flex items-center space-x-2.5">
           <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-md shadow-blue-600/20">
             <MapPin className="w-5 h-5 text-white" />
@@ -616,7 +619,7 @@ export const WorkerPage: React.FC = () => {
       {/* Main Body */}
       {/* Alerta del supervisor (con la app abierta) */}
       {alertaActiva && (
-        <div className="fixed inset-x-0 top-0 z-[60] p-3">
+        <div className="fixed inset-x-0 top-0 z-[60] p-3 pt-[calc(env(safe-area-inset-top)_+_0.75rem)]">
           <div className="max-w-md mx-auto bg-amber-400 text-slate-900 rounded-2xl shadow-2xl border-2 border-amber-200 p-4">
             <p className="font-extrabold text-sm flex items-center space-x-1.5">
               <span>⚠️</span>
