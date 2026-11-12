@@ -579,8 +579,11 @@ app.post('/api/users/:id/enrol-face', requireAuth(ROLES_ADMIN), async (req, res)
     const descriptor = parseDescriptor(descriptorFacial);
 
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID de usuario inválido' });
-    if (!descriptor || !validPhoto(fotoReferencia, 8_000_000)) {
-      return res.status(400).json({ error: 'Se requiere un descriptor facial válido y una foto de referencia' });
+    if (!descriptor) {
+      return res.status(400).json({ error: 'El descriptor facial no es válido. Intente con otra fotografía.' });
+    }
+    if (!validPhoto(fotoReferencia, 8_000_000)) {
+      return res.status(400).json({ error: 'La foto no es válida o es demasiado grande. Use una imagen JPG, PNG o WebP.' });
     }
 
     const p = await getPool();

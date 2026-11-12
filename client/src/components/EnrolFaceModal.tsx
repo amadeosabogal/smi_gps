@@ -11,6 +11,20 @@ interface EnrolFaceModalProps {
   onEnrolSuccess: () => void;
 }
 
+// Lado máximo de la foto de referencia: suficiente para reconocer el rostro y mucho más liviana
+const LADO_MAXIMO = 1024;
+
+function reducirImagen(img: HTMLImageElement): string {
+  const escala = Math.min(1, LADO_MAXIMO / Math.max(img.naturalWidth, img.naturalHeight));
+  const ancho = Math.max(1, Math.round(img.naturalWidth * escala));
+  const alto = Math.max(1, Math.round(img.naturalHeight * escala));
+  const canvas = document.createElement('canvas');
+  canvas.width = ancho;
+  canvas.height = alto;
+  canvas.getContext('2d')!.drawImage(img, 0, 0, ancho, alto);
+  return canvas.toDataURL('image/jpeg', 0.88);
+}
+
 export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
   isOpen,
   onClose,
@@ -112,15 +126,22 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
     setErrorMsg(null);
 
     try {
-      // 1. Cargar la imagen en un elemento HTML para que face-api la analice
-      const img = new Image();
-      img.src = photoPreview;
+      // 1. Cargar la imagen en un elemento HTML
+      const original = new Image();
+      original.src = photoPreview;
       await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
+        original.onload = resolve;
+        original.onerror = () => reject(new Error('No se pudo leer la imagen. Use un archivo JPG, PNG o WebP.'));
       });
 
-      // 2. Extraer descriptor facial
+      // 2. Reducir la foto (una fotografía de cámara puede pesar varios MB) y extraer el descriptor facial de ella
+      const foto = reducirImagen(original);
+      const img = new Image();
+      img.src = foto;
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error('No se pudo procesar la imagen.'));
+      });
       const detection = await faceRecognitionService.detectFace(img);
       if (!detection) {
         throw new Error('No se detectó ningún rostro claro en la imagen. Asegúrese de tener buena luz y mirar de frente.');
@@ -129,7 +150,7 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
       const descriptor = Array.from(detection.descriptor);
 
       // 3. Guardar en SQL Server
-      await api.enrolFace(worker.id, descriptor, photoPreview);
+      await api.enrolFace(worker.id, descriptor, foto);
       setSuccessMsg(`¡Rostro maestro de ${worker.nombre} enrolado con éxito!`);
 
       setTimeout(() => {
