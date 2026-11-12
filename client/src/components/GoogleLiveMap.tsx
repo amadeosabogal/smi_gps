@@ -128,7 +128,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
       } catch (err: any) {
         console.error('Error cargando Google Maps API:', err);
         setMapError(
-          'Error al cargar Google Maps. Verifica que la API Key sea válida y tenga habilitada la "Maps JavaScript API".'
+          'Error al cargar Google Maps. Verifique que la API Key sea válida y tenga habilitada la "Maps JavaScript API".'
         );
       }
     }
@@ -194,7 +194,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
           </p>
           ${
             station.descripcion
-              ? `<p style="font-size: 10px; color: #475569; background: #F1F5F9; padding: 4px; border-radius: 4px; margin-top: 4px;">${station.descripcion}</p>`
+              ? `<p style="font-size: 10px; color: #475569; background: #F1F5F9; padding: 4px; border-radius: 0; margin-top: 4px;">${station.descripcion}</p>`
               : ''
           }
         </div>
@@ -232,7 +232,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
       if (!worker.latitud || !worker.longitud) return;
 
       const isInside = worker.dentro_de_estacion;
-      const markerColor = isInside ? '#10B981' : '#F59E0B';
+      const markerColor = isInside ? '#1f7a4d' : '#b45f06';
       const initials = worker.nombre_usuario
         .split(' ')
         .slice(0, 2)
@@ -242,12 +242,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
 
       const svgIcon = {
         url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
-          <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
-            <circle cx="20" cy="20" r="18" fill="${markerColor}" fill-opacity="0.25" stroke="${markerColor}" stroke-width="1.5" />
-            <circle cx="20" cy="20" r="13" fill="#0F172A" stroke="${markerColor}" stroke-width="2.5" />
-            <text x="20" y="24" fill="#FFFFFF" font-size="10" font-family="Archivo, sans-serif" font-weight="900" text-anchor="middle">${initials}</text>
-            <circle cx="31" cy="9" r="5" fill="${markerColor}" stroke="#FFFFFF" stroke-width="1.5" />
-          </svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect x="5" y="5" width="30" height="30" fill="#1c42ba" stroke="${markerColor}" stroke-width="3" /><text x="20" y="25" fill="#FFFFFF" font-size="11" font-family="Archivo, sans-serif" font-weight="700" text-anchor="middle">${initials}</text></svg>
         `)}`,
         scaledSize: new window.google.maps.Size(40, 40),
         anchor: new window.google.maps.Point(20, 20),
@@ -272,7 +267,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
               <h4 style="font-size: 13px; font-weight: 800; color: #0F172A; margin: 0;">${worker.nombre_usuario}</h4>
               <p style="font-size: 11px; color: #64748B; margin: 2px 0 0 0;">${worker.cargo}</p>
             </div>
-            <span style="font-size: 10px; font-weight: bold; background: #F1F5F9; color: #334155; padding: 2px 6px; border-radius: 4px; font-family: monospace;">
+            <span style="font-size: 10px; font-weight: bold; background: #F1F5F9; color: #334155; padding: 2px 6px; border-radius: 0; font-family: monospace;">
               ${worker.codigo_empleado}
             </span>
           </div>
@@ -280,11 +275,11 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
           <div style="margin-top: 8px;">
             ${
               isInside
-                ? `<div style="display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: bold; color: #047857; background: #ECFDF5; border: 1px solid #A7F3D0; padding: 4px 8px; border-radius: 6px;">
-                    ✓ En Estación: ${worker.estacion_nombre || 'Asignada'}
+                ? `<div style="display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: bold; color: #047857; background: #ECFDF5; border: 1px solid #A7F3D0; padding: 4px 8px; border-radius: 0;">
+                    En Estación: ${worker.estacion_nombre || 'Asignada'}
                    </div>`
-                : `<div style="display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: bold; color: #B45309; background: #FFFBEB; border: 1px solid #FDE68A; padding: 4px 8px; border-radius: 6px;">
-                    ⚠ Fuera de estación asignada
+                : `<div style="display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: bold; color: #B45309; background: #FFFBEB; border: 1px solid #FDE68A; padding: 4px 8px; border-radius: 0;">
+                    Fuera de estación asignada
                    </div>`
             }
           </div>
@@ -303,8 +298,8 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
           ${
             photoUrl
               ? `<div style="margin-top: 8px; border-top: 1px solid #F1F5F9; padding-top: 6px; text-align: center;">
-                  <span style="font-size: 10px; font-weight: bold; color: #475569; display: block; margin-bottom: 4px;">📸 Evidencia Fotográfica de Entrada</span>
-                  <img src="${photoUrl}" style="width: 100%; max-height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #E2E8F0;" />
+                  <span style="font-size: 10px; font-weight: bold; color: #475569; display: block; margin-bottom: 4px;">Evidencia Fotográfica de Entrada</span>
+                  <img src="${photoUrl}" style="width: 100%; max-height: 120px; object-fit: cover; border-radius: 0; border: 1px solid #E2E8F0;" />
                 </div>`
               : ''
           }
@@ -346,50 +341,48 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
   }, [mapLoaded, selectedWorker]);
 
   return (
-    <div className="relative w-full h-[550px] rounded-2xl overflow-hidden shadow-md border border-slate-200">
+    <div className="relative h-[550px] w-full overflow-hidden border border-slate-300">
       <div ref={mapContainerRef} className="w-full h-full bg-slate-100" />
 
       {/* Botón superior de configuración */}
       <div className="absolute top-3 left-3 z-10 flex items-center space-x-2">
         <button
           onClick={() => setShowKeyModal(true)}
-          className="flex items-center space-x-1.5 px-3 py-1.5 bg-white/95 backdrop-blur-sm hover:bg-white text-slate-700 text-xs font-bold rounded-xl shadow-md border border-slate-200 transition cursor-pointer"
+          className="btn-secondary btn-sm shadow-sm"
         >
           <Key className="w-3.5 h-3.5 text-blue-600" />
           <span>{apiKey ? 'API Key Google' : 'Configurar API Key'}</span>
         </button>
 
-        <span className="hidden sm:inline-flex items-center space-x-1 px-2.5 py-1.5 bg-slate-900/85 backdrop-blur-sm text-white text-[11px] font-semibold rounded-xl shadow">
+        <span className="hidden items-center border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 shadow-sm sm:inline-flex">
           <Layers className="w-3 h-3 text-blue-400 mr-1" />
           Google Maps Oficial
         </span>
       </div>
 
       {/* Leyenda */}
-      <div className="absolute bottom-5 right-5 z-10 bg-white/95 backdrop-blur-sm p-3 rounded-xl shadow-lg border border-slate-200 text-xs text-slate-700 space-y-1.5 pointer-events-auto">
-        <p className="font-bold text-[10px] text-slate-400 uppercase tracking-wider mb-1">
-          Leyenda en Vivo
-        </p>
+      <div className="pointer-events-auto absolute bottom-5 right-5 z-10 space-y-1.5 border border-slate-300 bg-white p-3 text-sm text-slate-700 shadow-md">
+        <p className="mb-1 text-sm font-semibold text-slate-900">Leyenda</p>
         <div className="flex items-center space-x-2">
-          <span className="w-3 h-3 rounded-full bg-emerald-500 border border-white shadow-sm inline-block"></span>
-          <span>Trabajador en Estación</span>
+          <span className="inline-block h-3 w-3 bg-green-700"></span>
+          <span>Trabajador en su estación</span>
         </div>
         <div className="flex items-center space-x-2">
-          <span className="w-3 h-3 rounded-full bg-amber-500 border border-white shadow-sm inline-block"></span>
-          <span>Trabajador fuera de Estación</span>
+          <span className="inline-block h-3 w-3 bg-amber-600"></span>
+          <span>Trabajador fuera de zona</span>
         </div>
         <div className="flex items-center space-x-2">
-          <span className="w-3 h-3 rounded-full border-2 border-blue-500 inline-block"></span>
-          <span>Geocerca de Estación</span>
+          <span className="inline-block h-3 w-3 border-2 border-brand-600"></span>
+          <span>Geocerca de la estación</span>
         </div>
       </div>
 
       {/* Error de API Key */}
       {mapError && (
-        <div className="absolute inset-0 z-20 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-6 text-center">
+        <div className="absolute inset-0 z-20 bg-slate-900/80 flex items-center justify-center p-6 text-center">
           <div className="bg-white rounded-3xl p-6 max-w-md shadow-2xl">
             <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-2" />
-            <h3 className="font-extrabold text-base text-slate-900">Configuración de Google Maps API</h3>
+            <h3 className="font-bold text-base text-slate-900">Configuración de Google Maps API</h3>
             <p className="text-xs text-slate-600 mt-2 leading-relaxed">{mapError}</p>
             <div className="mt-4 flex justify-center space-x-2">
               <button
@@ -405,21 +398,21 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
 
       {/* Modal para ingresar API Key */}
       {showKeyModal && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-slate-900/70 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
             <div className="flex items-center space-x-2.5 mb-2">
               <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-white">
                 <Key className="w-5 h-5" />
               </div>
-              <h3 className="font-extrabold text-base text-slate-900">Google Maps JavaScript API</h3>
+              <h3 className="font-bold text-base text-slate-900">Google Maps JavaScript API</h3>
             </div>
             <p className="text-xs text-slate-500 mb-4 leading-relaxed">
-              Introduce tu <strong>API Key oficial de Google Maps</strong> para habilitar las capas satelitales, Street View y renderizado oficial de Google:
+              Ingrese la <strong>API Key oficial de Google Maps</strong> para habilitar las capas satelitales, Street View y renderizado oficial de Google:
             </p>
 
             <form onSubmit={handleSaveApiKey} className="space-y-3">
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
                   Google Maps API Key:
                 </label>
                 <input
@@ -432,10 +425,10 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
                 />
               </div>
 
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-[11px] text-slate-600 space-y-1">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 space-y-1">
                 <p className="font-semibold text-slate-800">Requisitos en Google Cloud Console:</p>
                 <p>1. Habilitar la <strong>Maps JavaScript API</strong>.</p>
-                <p>2. Si tienes restricciones de origen, permite <code>localhost:*</code> y tu IP local.</p>
+                <p>2. Si hay restricciones de origen, permita <code>localhost:*</code> y la IP local.</p>
                 <a
                   href="https://console.cloud.google.com/google/maps-apis/overview"
                   target="_blank"
@@ -459,7 +452,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
                 )}
                 <button
                   type="submit"
-                  className="px-5 py-2 font-extrabold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md text-xs cursor-pointer"
+                  className="px-5 py-2 font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md text-xs cursor-pointer"
                 >
                   Guardar y Cargar Mapa
                 </button>

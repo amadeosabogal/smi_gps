@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Camera, CheckCircle, AlertCircle, X, RefreshCw, Upload, ShieldCheck } from 'lucide-react';
+import { Camera, CheckCircle, AlertCircle, X, RefreshCw, Upload } from 'lucide-react';
 import { faceRecognitionService } from '../services/faceRecognition';
 import { api } from '../services/api';
 import type { Usuario } from '../types';
@@ -52,7 +52,7 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
         videoRef.current.play().catch(() => {});
       }
     } catch {
-      setErrorMsg('No se pudo acceder a la cámara. Puedes subir una foto.');
+      setErrorMsg('No se pudo acceder a la cámara. Puede subir una fotografía.');
       setMode('upload');
     }
   };
@@ -123,7 +123,7 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
       // 2. Extraer descriptor facial
       const detection = await faceRecognitionService.detectFace(img);
       if (!detection) {
-        throw new Error('No se detectó ningún rostro claro en la imagen. Asegúrate de tener buena luz y mirar de frente.');
+        throw new Error('No se detectó ningún rostro claro en la imagen. Asegúrese de tener buena luz y mirar de frente.');
       }
 
       const descriptor = Array.from(detection.descriptor);
@@ -146,47 +146,43 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-4 font-sans animate-fade-in">
-      <div className="bg-slate-900 border border-slate-700 max-w-sm w-full rounded-3xl overflow-hidden shadow-2xl flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-3 sm:p-4">
+      <div className="flex w-full max-w-md flex-col overflow-hidden border border-slate-300 bg-white shadow-xl">
         {/* Cabecera */}
-        <div className="p-4 border-b border-slate-800 flex items-center justify-between text-white bg-slate-950/70">
-          <div className="flex items-center space-x-2.5">
-            <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center">
-              <ShieldCheck className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h3 className="font-extrabold text-sm text-white">Enrolar Rostro Oficial</h3>
-              <p className="text-[11px] text-slate-400">
-                {worker.nombre} ({worker.codigo_empleado})
-              </p>
-            </div>
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">Registrar rostro oficial</h3>
+            <p className="text-sm text-slate-600">
+              {worker.nombre} ({worker.codigo_empleado})
+            </p>
           </div>
           <button
             onClick={() => {
               stopCamera();
               onClose();
             }}
-            className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-white transition"
+            aria-label="Cerrar"
+            className="p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
           >
-            <X className="w-4 h-4" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 
-        {/* Visor o Previsualización */}
-        <div className="relative bg-black w-full h-72 flex items-center justify-center overflow-hidden">
+        {/* Visor o previsualización */}
+        <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden bg-slate-900">
           {photoPreview ? (
-            <img src={photoPreview} alt="Foto oficial" className="w-full h-full object-cover" />
+            <img src={photoPreview} alt="Foto oficial" className="h-full w-full object-cover" />
           ) : mode === 'camera' ? (
             <>
-              <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover scale-x-[-1]" />
-              <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                <div className="w-44 h-56 border-2 border-dashed border-white/70 rounded-[45%]"></div>
+              <video ref={videoRef} autoPlay playsInline muted className="h-full w-full scale-x-[-1] object-cover" />
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                <div className="h-[78%] w-[52%] border-2 border-white/90" />
               </div>
             </>
           ) : (
-            <div className="p-6 text-center text-slate-400">
-              <Upload className="w-10 h-10 mx-auto mb-2 text-slate-500" />
-              <p className="text-xs">Selecciona una fotografía clara del rostro del trabajador</p>
+            <div className="p-6 text-center text-slate-300">
+              <Upload className="mx-auto mb-2 h-10 w-10 text-slate-400" />
+              <p className="text-sm">Seleccione una fotografía clara del rostro del trabajador</p>
             </div>
           )}
 
@@ -194,24 +190,24 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
           <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
         </div>
 
-        {/* Feedback Messages */}
+        {/* Mensajes */}
         {errorMsg && (
-          <div className="p-2.5 bg-rose-950/80 border-t border-rose-500/40 text-rose-300 text-xs flex items-center space-x-2">
-            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          <div className="flex items-center gap-2 border-l-4 border-l-red-700 bg-red-50 px-4 py-2.5 text-sm text-red-900">
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
             <span>{errorMsg}</span>
           </div>
         )}
         {successMsg && (
-          <div className="p-2.5 bg-emerald-950/80 border-t border-emerald-500/40 text-emerald-300 text-xs flex items-center space-x-2">
-            <CheckCircle className="w-4 h-4 flex-shrink-0" />
+          <div className="flex items-center gap-2 border-l-4 border-l-green-700 bg-green-50 px-4 py-2.5 text-sm text-green-900">
+            <CheckCircle className="h-4 w-4 flex-shrink-0" />
             <span>{successMsg}</span>
           </div>
         )}
 
-        {/* Botones de Acción */}
-        <div className="p-4 bg-slate-950 flex flex-col space-y-2.5">
+        {/* Acciones */}
+        <div className="p-4">
           {photoPreview ? (
-            <div className="flex space-x-2">
+            <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -220,37 +216,28 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
                   if (mode === 'camera') startCamera();
                 }}
                 disabled={isProcessing}
-                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl"
+                className="btn-secondary flex-1"
               >
-                Repetir Foto
+                Repetir foto
               </button>
-              <button
-                type="button"
-                onClick={handleSaveEnrolment}
-                disabled={isProcessing}
-                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl flex items-center justify-center space-x-1.5 shadow"
-              >
+              <button type="button" onClick={handleSaveEnrolment} disabled={isProcessing} className="btn-primary flex-1">
                 {isProcessing ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <RefreshCw className="h-4 w-4 animate-spin" />
                 ) : (
                   <>
-                    <CheckCircle className="w-4 h-4" />
-                    <span>Guardar y Enrolar</span>
+                    <CheckCircle className="h-4 w-4" />
+                    Guardar y registrar
                   </>
                 )}
               </button>
             </div>
           ) : (
-            <div className="flex space-x-2">
+            <div className="flex gap-2">
               {mode === 'camera' ? (
                 <>
-                  <button
-                    type="button"
-                    onClick={handleSnap}
-                    className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl flex items-center justify-center space-x-1.5 shadow"
-                  >
-                    <Camera className="w-4 h-4" />
-                    <span>Capturar Rostro</span>
+                  <button type="button" onClick={handleSnap} className="btn-primary flex-1">
+                    <Camera className="h-4 w-4" />
+                    Capturar rostro
                   </button>
                   <button
                     type="button"
@@ -259,20 +246,17 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
                       setMode('upload');
                       fileInputRef.current?.click();
                     }}
-                    className="px-3 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl"
+                    className="btn-secondary"
                     title="Subir archivo"
+                    aria-label="Subir archivo"
                   >
-                    <Upload className="w-4 h-4" />
+                    <Upload className="h-4 w-4" />
                   </button>
                 </>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl flex items-center justify-center space-x-1.5 shadow"
-                >
-                  <Upload className="w-4 h-4" />
-                  <span>Seleccionar Foto</span>
+                <button type="button" onClick={() => fileInputRef.current?.click()} className="btn-primary w-full">
+                  <Upload className="h-4 w-4" />
+                  Seleccionar foto
                 </button>
               )}
             </div>
@@ -282,4 +266,3 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
     </div>
   );
 };
-

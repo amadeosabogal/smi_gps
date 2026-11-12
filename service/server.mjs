@@ -1084,7 +1084,7 @@ app.get('/api/attendance/fraud-logs', requireAuth(ROLES_STAFF), async (req, res)
 
 // ----------------- NOTIFICACIONES PUSH / ALERTAS -----------------
 
-const MENSAJE_ALERTA_DEFECTO = 'Estás fuera de tu zona de trabajo. Regresa a tu estación asignada.';
+const MENSAJE_ALERTA_DEFECTO = 'Se encuentra fuera de su zona de trabajo. Regrese a su estación asignada.';
 const lastAlertas = new Map(); // usuarioId -> instante de la última alerta (evita el envío repetido por error)
 
 function pushDisponible(res) {
@@ -1189,7 +1189,7 @@ app.post('/api/push/send', requireAuth(ROLES_STAFF), async (req, res) => {
       .query('SELECT id, endpoint, p256dh, auth FROM SuscripcionesPush WHERE usuario_id = @u')).recordset;
 
     const payload = JSON.stringify({
-      title: '⚠️ Alerta de SMI Asistencia',
+      title: 'Alerta de SMI',
       body: mensaje,
       tag: 'smi-alerta',
       alertaId,

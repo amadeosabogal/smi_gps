@@ -3,20 +3,13 @@ import { api, auth } from '../services/api';
 import { socket, connectSocket, disconnectSocket } from '../services/socket';
 import { geolocationService, type CoordsData } from '../services/geolocation';
 import type { Usuario, EstacionTrabajo } from '../types';
-import {
-  MapPin,
-  ShieldCheck,
-  AlertTriangle,
-  Navigation,
-  Compass,
-  RefreshCw,
-  Lock,
-  ScanFace,
-} from 'lucide-react';
+import { ShieldCheck, AlertTriangle, Compass, RefreshCw, ScanFace } from 'lucide-react';
 import { BiometricVerificationModal } from '../components/BiometricVerificationModal';
 import { faceRecognitionService } from '../services/faceRecognition';
 import { eyeBlinkService } from '../services/eyeBlink';
 import { PushAlertCard } from '../components/PushAlertCard';
+import { AuthLayout } from '../components/AuthLayout';
+import { BrandLogo } from '../components/BrandLogo';
 import { syncPush, releasePush } from '../services/push';
 
 export const WorkerPage: React.FC = () => {
@@ -248,7 +241,7 @@ export const WorkerPage: React.FC = () => {
   const handleLogout = async () => {
     if (isActiveShift) {
       const confirm = window.confirm(
-        'Tienes un turno activo. Para cerrar sesión de forma segura, primero debes registrar tu salida. ¿Deseas continuar?'
+        'Tiene un turno activo. Para cerrar sesión de forma segura, primero debe registrar su salida. ¿Desea continuar?'
       );
       if (!confirm) return;
     }
@@ -339,7 +332,7 @@ export const WorkerPage: React.FC = () => {
         setGpsErrorMsg(null);
       } else {
         setGpsPermissionStatus('denied');
-        alert('Debes conceder el permiso de ubicación en tu navegador para que el sistema detecte en qué estación te encuentras.');
+        alert('Debe conceder el permiso de ubicación en su navegador para que el sistema detecte en qué estación se encuentra.');
       }
     } catch (err: any) {
       setGpsErrorMsg(err.message);
@@ -377,9 +370,9 @@ export const WorkerPage: React.FC = () => {
           setGpsErrorMsg(null);
         } catch (gpsErr: any) {
           setActionLoading(false);
-          const msg = gpsErr.message || 'No se pudo obtener la ubicación GPS de tu celular.';
+          const msg = gpsErr.message || 'No se pudo obtener la ubicación GPS de su celular.';
           alert(
-            `⚠️ UBICACIÓN GPS REQUERIDA:\n\n${msg}\n\nPara registrar tu asistencia es OBLIGATORIO que actives la ubicación GPS en tu celular y concedas los permisos en tu navegador.`
+            `UBICACIÓN GPS REQUERIDA:\n\n${msg}\n\nPara registrar su asistencia es obligatorio activar la ubicación GPS en su celular y conceder los permisos en su navegador.`
           );
           return;
         }
@@ -408,7 +401,7 @@ export const WorkerPage: React.FC = () => {
 
       startContinuousTracking(selectedUser.id);
       if ('vibrate' in navigator) navigator.vibrate([100, 50, 100]);
-      alert(`✓ Entrada confirmada con reconocimiento facial (${similarity}% de similitud). ¡Buen turno!`);
+      alert(`Entrada confirmada con reconocimiento facial (${similarity}% de similitud). Buen turno.`);
     } catch (err: any) {
       alert(err.message || 'Error al registrar entrada');
     } finally {
@@ -457,7 +450,7 @@ export const WorkerPage: React.FC = () => {
       setCurrentCoords(null);
       setDetectedStation(null);
       if ('vibrate' in navigator) navigator.vibrate([150]);
-      alert(`✓ Salida confirmada con reconocimiento facial (${similarity}% de similitud). Tu jornada ha concluido.`);
+      alert(`Salida confirmada con reconocimiento facial (${similarity}% de similitud). Su jornada ha concluido.`);
     } catch (err: any) {
       alert(err.message || 'Error al registrar salida');
     } finally {
@@ -496,143 +489,115 @@ export const WorkerPage: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-4">
-        <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-        <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">
-          Cargando Portal del Trabajador...
-        </p>
+      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-100 p-4">
+        <div className="mb-3 h-10 w-10 animate-spin rounded-full border-4 border-brand-600 border-t-transparent" />
+        <p className="text-sm text-slate-600">Cargando…</p>
       </div>
     );
   }
 
-  // Login Screen if not authenticated
+  // Pantalla de ingreso
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-900 to-blue-950 flex flex-col justify-center items-center px-4 py-8 font-sans">
-        <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl border border-slate-100">
-          <div className="flex flex-col items-center text-center mb-6">
-            <div className="w-14 h-14 rounded-2xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/30 mb-3">
-              <MapPin className="w-8 h-8 text-white" />
-            </div>
-            <h2 className="text-xl font-extrabold text-slate-900">SMI Asistencia</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Portal de Control de Jornada</p>
+      <AuthLayout
+        titulo="Iniciar sesión"
+        subtitulo="Seleccione su nombre e ingrese su PIN para registrar su asistencia."
+        panelTitulo="Control de asistencia y geolocalización"
+        panelTexto="Registre su entrada y salida con reconocimiento facial y ubicación verificada en su estación de trabajo."
+      >
+        <form onSubmit={handleLogin} className="space-y-5">
+          <div>
+            <label htmlFor="trabajador" className="field-label">
+              Trabajador
+            </label>
+            <select
+              id="trabajador"
+              value={selectedUser?.id || ''}
+              onChange={(e) => {
+                const u = workers.find((w) => w.id === Number(e.target.value));
+                if (u) setSelectedUser(u);
+              }}
+              className="field"
+            >
+              {workers.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.nombre} ({w.codigo_empleado})
+                </option>
+              ))}
+            </select>
+            {selectedUser && (
+              <p className="mt-1.5 text-sm text-slate-600">
+                {selectedUser.cargo} · Código {selectedUser.codigo_empleado}
+              </p>
+            )}
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1.5">
-                Selecciona tu Nombre:
-              </label>
-              <select
-                value={selectedUser?.id || ''}
-                onChange={(e) => {
-                  const u = workers.find((w) => w.id === Number(e.target.value));
-                  if (u) setSelectedUser(u);
-                }}
-                className="w-full bg-slate-50 border border-slate-300 text-slate-800 text-sm font-semibold rounded-xl px-3.5 py-2.5 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-              >
-                {workers.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.nombre} ({w.codigo_empleado})
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div>
+            <label htmlFor="pin" className="field-label">
+              PIN
+            </label>
+            <input
+              id="pin"
+              type="password"
+              maxLength={6}
+              value={pinInput}
+              onChange={(e) => setPinInput(e.target.value)}
+              placeholder="Ingrese su PIN"
+              inputMode="numeric"
+              autoComplete="off"
+              className="field"
+            />
+          </div>
 
-            {selectedUser && (
-              <div className="p-3 bg-blue-50 rounded-xl border border-blue-100 text-xs">
-                <p className="font-bold text-blue-900">{selectedUser.cargo}</p>
-                <p className="text-[11px] text-blue-600 font-mono mt-0.5">
-                  Código: {selectedUser.codigo_empleado}
-                </p>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1.5">
-                PIN de Marcación:
-              </label>
-              <div className="relative">
-                <input
-                  type="password"
-                  maxLength={6}
-                  value={pinInput}
-                  onChange={(e) => setPinInput(e.target.value)}
-                  placeholder="Introduce tu PIN" inputMode="numeric" autoComplete="off"
-                  className="w-full bg-slate-50 border border-slate-300 text-slate-900 text-center tracking-widest text-lg font-bold rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                />
-                <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loginLoading || pinInput.length < 4}
-              className="w-full py-3.5 disabled:opacity-60 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-sm rounded-xl shadow-lg shadow-blue-600/30 transition transform active:scale-95 cursor-pointer"
-            >
-              {loginLoading ? 'Verificando...' : 'Ingresar al Marcador'}
-            </button>
-          </form>
-        </div>
-
-        <p className="text-[11px] text-slate-500 text-center mt-6">
-          SMI GPS Asistencia Móvil • PWA & CapacitorJS Ready
-        </p>
-      </div>
+          <button type="submit" disabled={loginLoading || pinInput.length < 4} className="btn-primary w-full">
+            {loginLoading ? 'Verificando…' : 'Ingresar'}
+          </button>
+        </form>
+      </AuthLayout>
     );
   }
 
-  // Main Worker Clock-In/Out Interface
+  // Pantalla principal del trabajador
   return (
     <div
-      className="min-h-screen bg-slate-900 flex flex-col font-sans text-slate-100"
+      className="flex min-h-screen flex-col bg-slate-100 text-slate-900"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
-      {/* Worker App Header (Dedicated, No Admin Links) */}
-      <header className="bg-slate-950/90 border-b border-slate-800 sticky top-0 z-40 backdrop-blur-md px-4 pb-3 pt-[calc(env(safe-area-inset-top)_+_0.75rem)] flex items-center justify-between">
-        <div className="flex items-center space-x-2.5">
-          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-md shadow-blue-600/20">
-            <MapPin className="w-5 h-5 text-white" />
+      {/* Encabezado institucional */}
+      <header className="sticky top-0 z-40 bg-brand-600 pb-3 pt-[calc(env(safe-area-inset-top)_+_0.75rem)] text-white">
+        <div className="mx-auto flex w-full max-w-xl items-center justify-between px-4">
+          <div className="flex items-center gap-3">
+            <BrandLogo variant="blanco" className="h-9 w-auto" />
+            <span className="hidden border-l border-white/30 pl-3 text-sm font-medium sm:block">Control de asistencia</span>
           </div>
-          <div>
-            <span className="font-extrabold text-sm tracking-tight text-white block">SMI Móvil</span>
-            <span className="text-[10px] text-slate-400 font-medium block -mt-0.5">Control de Asistencia</span>
+          <div className="flex items-center gap-4">
+            <span className="flex items-center gap-2 text-sm text-brand-100">
+              <span className={`h-2 w-2 ${isSocketConnected ? 'bg-green-400' : 'bg-red-400'}`} />
+              {isSocketConnected ? 'Conectado' : 'Sin conexión'}
+            </span>
+            <button
+              onClick={handleLogout}
+              className="rounded border border-white/40 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-white/10"
+            >
+              Cerrar sesión
+            </button>
           </div>
-        </div>
-
-        <div className="flex items-center space-x-2">
-          {/* Connection status */}
-          <span
-            className={`w-2 h-2 rounded-full ${
-              isSocketConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'
-            }`}
-          />
-          <button
-            onClick={handleLogout}
-            className="text-[11px] font-semibold text-slate-400 hover:text-white bg-slate-800/80 px-2.5 py-1 rounded-lg border border-slate-700/80 transition"
-          >
-            Cerrar Sesión
-          </button>
         </div>
       </header>
 
-      {/* Main Body */}
       {/* Alerta del supervisor (con la app abierta) */}
       {alertaActiva && (
         <div className="fixed inset-x-0 top-0 z-[60] p-3 pt-[calc(env(safe-area-inset-top)_+_0.75rem)]">
-          <div className="max-w-md mx-auto bg-amber-400 text-slate-900 rounded-2xl shadow-2xl border-2 border-amber-200 p-4">
-            <p className="font-extrabold text-sm flex items-center space-x-1.5">
-              <span>⚠️</span>
-              <span>Alerta de tu supervisor</span>
-            </p>
-            <p className="text-sm font-semibold mt-1.5 leading-snug">{alertaActiva.mensaje}</p>
+          <div className="mx-auto max-w-xl border border-slate-300 border-l-4 border-l-amber-600 bg-white p-4 shadow-xl">
+            <p className="text-sm font-semibold text-amber-800">Alerta de su supervisor</p>
+            <p className="mt-1.5 text-base leading-snug text-slate-900">{alertaActiva.mensaje}</p>
             <button
               type="button"
               onClick={() => {
                 if (alertaActiva.id) api.ackAlert(alertaActiva.id).catch(() => {});
                 setAlertaActiva(null);
               }}
-              className="mt-3 w-full py-2 bg-slate-900 text-white text-xs font-extrabold rounded-xl active:scale-95 transition"
+              className="btn-primary mt-4 w-full"
             >
               Entendido
             </button>
@@ -640,12 +605,12 @@ export const WorkerPage: React.FC = () => {
         </div>
       )}
 
-      <main className="flex-1 max-w-md w-full mx-auto px-4 py-5 flex flex-col justify-between">
+      <main className="mx-auto flex w-full max-w-xl flex-1 flex-col px-4 py-5">
         <div className="space-y-4">
-          {/* Worker Profile Card */}
-          <div className="bg-slate-800/70 border border-slate-700/80 rounded-2xl p-3.5 flex items-center justify-between shadow-sm">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-900/60 border border-blue-500/40 flex items-center justify-center font-extrabold text-blue-300 text-sm">
+          {/* Datos del trabajador */}
+          <section className="panel flex items-center justify-between gap-3 p-4">
+            <div className="flex items-center gap-3">
+              <div className="grid h-11 w-11 place-items-center bg-brand-600 text-sm font-semibold text-white">
                 {selectedUser?.nombre
                   .split(' ')
                   .slice(0, 2)
@@ -653,103 +618,67 @@ export const WorkerPage: React.FC = () => {
                   .join('')}
               </div>
               <div>
-                <div className="flex items-center space-x-1.5">
-                  <h3 className="font-bold text-sm text-white">{selectedUser?.nombre}</h3>
-                  {selectedUser?.facial_enrolado ? (
-                    <span className="text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-600/50 px-1.5 py-0.2 rounded font-bold">
-                      ✓ Biometría
-                    </span>
-                  ) : (
-                    <span className="text-[10px] bg-amber-950 text-amber-300 border border-amber-600/50 px-1.5 py-0.2 rounded font-bold">
-                      Enrolar
-                    </span>
-                  )}
-                </div>
-                <p className="text-[11px] text-slate-400">{selectedUser?.cargo}</p>
+                <h2 className="text-base font-semibold text-slate-900">{selectedUser?.nombre}</h2>
+                <p className="text-sm text-slate-600">
+                  {selectedUser?.cargo} · {selectedUser?.codigo_empleado}
+                </p>
               </div>
             </div>
-            <span className="text-[10px] font-mono font-bold bg-slate-900 text-blue-400 px-2 py-0.5 rounded border border-slate-700">
-              {selectedUser?.codigo_empleado}
-            </span>
-          </div>
+            {selectedUser?.facial_enrolado ? (
+              <span className="tag shrink-0 whitespace-nowrap border-green-200 bg-green-50 text-green-800">Rostro registrado</span>
+            ) : (
+              <span className="tag shrink-0 whitespace-nowrap border-amber-200 bg-amber-50 text-amber-800">Rostro pendiente</span>
+            )}
+          </section>
 
           {/* Alertas del supervisor en el celular (push) */}
           <PushAlertCard />
 
-          {/* Tarjeta de Permiso y Conexión GPS del Celular */}
+          {/* Ubicación (GPS) del celular */}
           {gpsPermissionStatus !== 'granted' ? (
-            <div className="bg-amber-950/60 border border-amber-500/50 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-400 flex items-center justify-center flex-shrink-0">
-                  <MapPin className="w-5 h-5 animate-bounce" />
-                </div>
-                <div>
-                  <h4 className="font-bold text-xs text-amber-200">Permiso de Ubicación del Celular</h4>
-                  <p className="text-[11px] text-amber-300/80 mt-0.5">
-                    Obligatorio para verificar en qué estación de trabajo te encuentras.
-                  </p>
-                  {gpsErrorMsg && (
-                    <p className="text-[10px] text-rose-400 font-semibold mt-1">⚠️ {gpsErrorMsg}</p>
-                  )}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={handleRequestLocation}
-                className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs rounded-xl shadow transition transform active:scale-95 cursor-pointer flex-shrink-0"
-              >
-                Activar GPS
+            <section className="panel border-l-4 border-l-amber-600 p-4">
+              <h3 className="text-sm font-semibold text-slate-900">Se requiere activar la ubicación</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                Es obligatoria para verificar en qué estación de trabajo se encuentra.
+              </p>
+              {gpsErrorMsg && <p className="mt-1 text-sm font-medium text-red-700">{gpsErrorMsg}</p>}
+              <button type="button" onClick={handleRequestLocation} className="btn-primary btn-sm mt-3">
+                Activar ubicación
               </button>
-            </div>
+            </section>
           ) : (
-            <div className="bg-emerald-950/40 border border-emerald-500/30 px-3.5 py-2.5 rounded-2xl flex items-center justify-between text-xs">
-              <div className="flex items-center space-x-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="text-emerald-300 font-bold">Ubicación GPS del Celular Conectada</span>
-              </div>
-              {currentCoords && (
-                <span className="text-[10px] font-mono font-bold text-emerald-400 bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-700/50">
-                  ±{Math.round(currentCoords.accuracy)}m precisión
+            <section className="panel flex items-center justify-between px-4 py-3 text-sm">
+              <span className="flex items-center gap-2 font-medium text-slate-800">
+                <span className="h-2 w-2 bg-green-600" />
+                Ubicación del celular activa
+              </span>
+              {currentCoords && <span className="text-slate-600">Precisión ±{Math.round(currentCoords.accuracy)} m</span>}
+            </section>
+          )}
+
+          {/* Jornada: reloj y registro */}
+          <section className="panel">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <h3 className="text-sm font-semibold text-slate-900">Jornada</h3>
+              {isActiveShift ? (
+                <span className="tag border-green-200 bg-green-50 text-green-800">
+                  <span className="h-1.5 w-1.5 bg-green-600" />
+                  En turno
+                </span>
+              ) : (
+                <span className="tag border-slate-300 bg-slate-50 text-slate-600">
+                  <span className="h-1.5 w-1.5 bg-slate-400" />
+                  Fuera de jornada
                 </span>
               )}
             </div>
-          )}
 
-          {/* Shift Clock & Punch Card */}
-          <div
-            className={`rounded-3xl p-6 text-center border shadow-xl transition-all duration-300 ${
-              isActiveShift
-                ? 'bg-gradient-to-b from-blue-950 via-slate-900 to-slate-950 border-blue-600/70'
-                : 'bg-slate-800/90 border-slate-700'
-            }`}
-          >
-            {/* Status Badge */}
-            <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider mb-4 border border-slate-700 bg-slate-950/60 shadow-inner">
-              {isActiveShift ? (
-                <>
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span className="text-emerald-400">Turno en Curso</span>
-                </>
-              ) : (
-                <>
-                  <span className="w-2.5 h-2.5 rounded-full bg-slate-400"></span>
-                  <span className="text-slate-400">Fuera de Jornada</span>
-                </>
-              )}
+            <div className="px-4 py-6 text-center">
+              <p className="text-sm text-slate-600">Tiempo transcurrido</p>
+              <p className="mt-1 text-5xl font-semibold tabular-nums text-slate-900">{formatTime(shiftSeconds)}</p>
             </div>
 
-            {/* Timer Counter */}
-            <div className="mb-6">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
-                Tiempo Transcurrido
-              </p>
-              <div className="text-5xl font-black font-mono tracking-tight text-white mt-1">
-                {formatTime(shiftSeconds)}
-              </div>
-            </div>
-
-            {/* Big Action Button */}
-            <div className="mb-4">
+            <div className="px-4 pb-4">
               {isActiveShift ? (
                 <button
                   onClick={() => {
@@ -757,14 +686,14 @@ export const WorkerPage: React.FC = () => {
                     setIsCameraOpen(true);
                   }}
                   disabled={actionLoading}
-                  className="w-full py-4 px-6 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-base shadow-lg shadow-rose-600/30 flex items-center justify-center space-x-2.5 transition transform active:scale-95 disabled:opacity-60 cursor-pointer"
+                  className="btn-danger w-full py-3.5 text-base"
                 >
                   {actionLoading ? (
-                    <RefreshCw className="w-6 h-6 animate-spin" />
+                    <RefreshCw className="h-5 w-5 animate-spin" />
                   ) : (
                     <>
-                      <ScanFace className="w-6 h-6" />
-                      <span>REGISTRAR SALIDA (FACIAL)</span>
+                      <ScanFace className="h-5 w-5" />
+                      Registrar salida
                     </>
                   )}
                 </button>
@@ -775,132 +704,105 @@ export const WorkerPage: React.FC = () => {
                     setIsCameraOpen(true);
                   }}
                   disabled={actionLoading}
-                  className="w-full py-4 px-6 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-base shadow-lg shadow-emerald-600/30 flex items-center justify-center space-x-2.5 transition transform active:scale-95 disabled:opacity-60 cursor-pointer"
+                  className="btn-primary w-full py-3.5 text-base"
                 >
                   {actionLoading ? (
-                    <RefreshCw className="w-6 h-6 animate-spin" />
+                    <RefreshCw className="h-5 w-5 animate-spin" />
                   ) : (
                     <>
-                      <ScanFace className="w-6 h-6" />
-                      <span>REGISTRAR ENTRADA (FACIAL)</span>
+                      <ScanFace className="h-5 w-5" />
+                      Registrar entrada
                     </>
                   )}
                 </button>
               )}
-              <p className="text-[11px] text-slate-400 text-center mt-2 flex items-center justify-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
-                <span>Reconocimiento facial biométrico con prueba de vida</span>
+              <p className="mt-2 text-center text-sm text-slate-600">
+                Se verificará su identidad con reconocimiento facial y prueba de vida.
               </p>
             </div>
 
-            {/* GPS Status Indicator */}
-            <div className="p-3 rounded-xl text-xs font-medium border border-slate-700/60 bg-slate-950/50 flex items-center justify-center space-x-2">
-              {isActiveShift ? (
-                <>
-                  <Navigation className="w-4 h-4 text-emerald-400 animate-spin" style={{ animationDuration: '4s' }} />
-                  <span className="text-emerald-300 font-semibold">
-                    GPS Activo • Transmitiendo telemetría en vivo
-                  </span>
-                </>
-              ) : (
-                <>
-                  <ShieldCheck className="w-4 h-4 text-slate-400" />
-                  <span className="text-slate-400">
-                    GPS Desactivado • Tu ubicación no es compartida
-                  </span>
-                </>
-              )}
+            <div className="flex items-center gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+              <ShieldCheck className={`h-4 w-4 flex-shrink-0 ${isActiveShift ? 'text-green-700' : 'text-slate-500'}`} />
+              <span className={isActiveShift ? 'text-green-800' : 'text-slate-600'}>
+                {isActiveShift
+                  ? 'GPS activo: su ubicación se envía durante el turno.'
+                  : 'GPS inactivo: su ubicación no se comparte fuera del turno.'}
+              </span>
             </div>
-          </div>
+          </section>
 
-          {/* Active Geofence & Location Telemetry (Only visible when clocked in) */}
+          {/* Estación y ubicación (solo con turno activo) */}
           {isActiveShift && (
-            <div className="space-y-3">
-              {/* Geofence Alert */}
-              <div
-                className={`p-4 rounded-2xl border flex items-start space-x-3 shadow-md ${
-                  isInsideStation
-                    ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-200'
-                    : 'bg-amber-950/60 border-amber-500/40 text-amber-200'
+            <div className="space-y-4">
+              <section
+                className={`panel flex items-start gap-3 border-l-4 p-4 ${
+                  isInsideStation ? 'border-l-green-700' : 'border-l-amber-600'
                 }`}
               >
                 {isInsideStation ? (
-                  <ShieldCheck className="w-6 h-6 text-emerald-400 flex-shrink-0 mt-0.5" />
+                  <ShieldCheck className="mt-0.5 h-5 w-5 flex-shrink-0 text-green-700" />
                 ) : (
-                  <AlertTriangle className="w-6 h-6 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-700" />
                 )}
                 <div>
-                  <h4 className="font-bold text-sm text-white">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    {isInsideStation ? `En estación: ${detectedStation?.nombre}` : 'Fuera de su estación de trabajo'}
+                  </h3>
+                  <p className="mt-0.5 text-sm text-slate-600">
                     {isInsideStation
-                      ? `En Estación: ${detectedStation?.nombre}`
-                      : 'Fuera de Estación de Trabajo Asignada'}
-                  </h4>
-                  <p className="text-xs mt-0.5 text-slate-300">
-                    {isInsideStation
-                      ? `Estás dentro del radio permitido (${detectedStation?.radio_metros} metros).`
+                      ? `Se encuentra dentro del radio permitido (${detectedStation?.radio_metros} metros).`
                       : distanceToNearest
-                      ? `Estación más cercana: ${detectedStation?.nombre} (a ~${distanceToNearest}m).`
-                      : 'Calculando distancia a estaciones de trabajo...'}
+                      ? `Estación más cercana: ${detectedStation?.nombre}, a unos ${distanceToNearest} m.`
+                      : 'Calculando la distancia a las estaciones de trabajo…'}
                   </p>
                 </div>
-              </div>
+              </section>
 
-              {/* Coordinates Pill */}
               {currentCoords && (
-                <div className="bg-slate-800/60 border border-slate-700 p-3.5 rounded-2xl text-xs shadow-sm">
-                  <div className="flex items-center justify-between text-slate-300 mb-2">
-                    <span className="flex items-center font-semibold">
-                      <Compass className="w-4 h-4 mr-1.5 text-blue-400" />
-                      Telemetría GPS
-                    </span>
-                    <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-700/60">
-                      ±{Math.round(currentCoords.accuracy)}m precisión
-                    </span>
+                <section className="panel p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                      <Compass className="h-4 w-4 text-slate-500" />
+                      Coordenadas GPS
+                    </h3>
+                    <span className="text-sm text-slate-600">±{Math.round(currentCoords.accuracy)} m</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
-                    <div className="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
-                      <span className="block text-[9px] text-slate-500 font-sans uppercase">Latitud</span>
-                      <span className="text-white font-bold">{currentCoords.latitude.toFixed(6)}</span>
+                  <dl className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="border border-slate-200 bg-slate-50 p-2.5">
+                      <dt className="text-slate-600">Latitud</dt>
+                      <dd className="mt-0.5 font-semibold tabular-nums text-slate-900">{currentCoords.latitude.toFixed(6)}</dd>
                     </div>
-                    <div className="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
-                      <span className="block text-[9px] text-slate-500 font-sans uppercase">Longitud</span>
-                      <span className="text-white font-bold">{currentCoords.longitude.toFixed(6)}</span>
+                    <div className="border border-slate-200 bg-slate-50 p-2.5">
+                      <dt className="text-slate-600">Longitud</dt>
+                      <dd className="mt-0.5 font-semibold tabular-nums text-slate-900">{currentCoords.longitude.toFixed(6)}</dd>
                     </div>
-                  </div>
-                </div>
+                  </dl>
+                </section>
               )}
 
               {/* Simulación de movimiento: solo desarrollo o VITE_ENABLE_SIMULATION=true */}
               {(import.meta.env.DEV || import.meta.env.VITE_ENABLE_SIMULATION === 'true') && (
-              <div className="bg-slate-800/40 border border-slate-700/60 p-3 rounded-2xl text-xs">
-                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
-                  Simular Movimiento (Pruebas de Geocerca):
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {workstations.map((ws) => (
-                    <button
-                      key={ws.id}
-                      onClick={() => handleSimulateMove(ws.id)}
-                      className="px-2.5 py-1 text-[11px] bg-slate-800 border border-slate-600 hover:bg-blue-600 hover:border-blue-500 text-slate-200 font-semibold rounded-lg transition"
-                    >
-                      📍 {ws.nombre.split(' ')[0]}
-                    </button>
-                  ))}
-                </div>
-              </div>
+                <section className="panel border-dashed p-4">
+                  <h3 className="mb-2 text-sm font-semibold text-slate-900">Simular movimiento (pruebas de geocerca)</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {workstations.map((ws) => (
+                      <button key={ws.id} onClick={() => handleSimulateMove(ws.id)} className="btn-secondary btn-sm">
+                        {ws.nombre.split(' ')[0]}
+                      </button>
+                    ))}
+                  </div>
+                </section>
               )}
             </div>
           )}
         </div>
 
-        {/* Footer info & Privacy note */}
-        <div className="mt-6 pt-4 border-t border-slate-800 text-center text-[10px] text-slate-500">
-          <p>🔒 Tu privacidad está protegida. El rastreo GPS solo opera durante tu turno activo.</p>
-          <p className="mt-1">SMI GPS • PWA & Capacitor Móvil</p>
-        </div>
+        <footer className="mt-8 border-t border-slate-300 pt-4 text-center text-sm text-slate-600">
+          <p>Su privacidad está protegida: el rastreo GPS solo opera durante su turno activo.</p>
+        </footer>
       </main>
 
-      {/* Modal de Reconocimiento Facial Biométrico y Prueba de Vida */}
+      {/* Reconocimiento facial y prueba de vida */}
       {selectedUser && (
         <BiometricVerificationModal
           isOpen={isCameraOpen}

@@ -2,43 +2,187 @@
 @import '@fontsource/archivo/500.css';
 @import '@fontsource/archivo/600.css';
 @import '@fontsource/archivo/700.css';
-@import '@fontsource/archivo/800.css';
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ==========================================================================
+   Sistema de diseño SMI
+   Azul institucional #1C42BA · superficies planas · sin degradados ni brillos
+   ========================================================================== */
+
 @layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
-    font-family: 'Archivo', sans-serif;
+    font-family: 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    background-color: #f1f3f8;
+    color: #1e293b;
     -webkit-tap-highlight-color: transparent;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    letter-spacing: -0.005em;
+  }
+
+  /* Foco visible y sobrio en todos los controles (accesibilidad) */
+  :focus-visible {
+    outline: 2px solid #1c42ba;
+    outline-offset: 2px;
+  }
+
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: none;
+  }
+
+  /* Números alineados en contadores, tablas y tarjetas */
+  table,
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
   }
 }
 
-/* Custom pulse animations for real-time GPS markers */
+/* --------------------------------------------------------------------------
+   Componentes base: campos, botones y paneles planos con borde fino
+   -------------------------------------------------------------------------- */
+@layer components {
+  .field {
+    @apply block w-full rounded border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400;
+    @apply focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600;
+  }
+  .field-label {
+    @apply mb-1.5 block text-sm font-medium text-slate-700;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded px-4 py-2.5 text-sm font-semibold transition-colors;
+    @apply disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-primary {
+    @apply btn bg-brand-600 text-white hover:bg-brand-700;
+  }
+  .btn-secondary {
+    @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-50;
+  }
+  .btn-danger {
+    @apply btn bg-red-700 text-white hover:bg-red-800;
+  }
+  .btn-sm {
+    @apply px-3 py-1.5 text-xs;
+  }
+  .panel {
+    @apply rounded border border-slate-300 bg-white;
+  }
+  .tag {
+    @apply inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs font-medium;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Texto: sin mayúsculas forzadas ni espaciado entre letras (se ve genérico y es
+   más difícil de leer). Solo los encabezados de tabla conservan mayúsculas.
+   -------------------------------------------------------------------------- */
+.uppercase {
+  text-transform: none;
+}
+.tracking-wide,
+.tracking-wider,
+.tracking-widest {
+  letter-spacing: normal;
+}
+thead,
+thead th {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* --------------------------------------------------------------------------
+   Computadora (>= 768 px): esquinas rectas en toda la interfaz.
+   En celular se conservan radios mínimos (ver tailwind.config.js).
+   Excepciones: indicadores de carga giratorios y los controles de los mapas.
+   -------------------------------------------------------------------------- */
+@media (min-width: 768px) {
+  [class*='rounded'],
+  [class*='rounded']::before,
+  [class*='rounded']::after,
+  .panel,
+  .field,
+  .btn,
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .tag,
+  button,
+  input,
+  select,
+  textarea,
+  img {
+    border-radius: 0 !important;
+  }
+
+  .animate-spin {
+    border-radius: 9999px !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Mapas
+   -------------------------------------------------------------------------- */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  z-index: 10;
+  font-family: 'Archivo', system-ui, sans-serif;
+}
+
+/* Marcador de ubicación en vivo: anillo sobrio en el azul de la marca */
 @keyframes pulse-ring {
   0% {
-    transform: scale(0.95);
-    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.7);
+    box-shadow: 0 0 0 0 rgba(28, 66, 186, 0.45);
   }
   70% {
-    transform: scale(1);
-    box-shadow: 0 0 0 16px rgba(37, 99, 235, 0);
+    box-shadow: 0 0 0 10px rgba(28, 66, 186, 0);
   }
   100% {
-    transform: scale(0.95);
-    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+    box-shadow: 0 0 0 0 rgba(28, 66, 186, 0);
   }
 }
 
 .pulsing-marker {
-  animation: pulse-ring 2s infinite cubic-bezier(0.45, 0, 0.55, 1);
+  animation: pulse-ring 2.4s infinite ease-out;
 }
 
-/* Ensure Leaflet container fits neatly */
-.leaflet-container {
-  width: 100%;
-  height: 100%;
-  border-radius: 0.75rem;
-  z-index: 10;
+/* Barras de desplazamiento discretas */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #b6bfd0 transparent;
+}
+
+/* Ventanas emergentes y controles de los mapas: rectos y planos */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip,
+.leaflet-bar,
+.leaflet-bar a {
+  border-radius: 0 !important;
+}
+.leaflet-popup-content-wrapper {
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.25);
+}
+.leaflet-popup-content {
+  margin: 10px 12px;
+}
+.custom-worker-marker,
+.station-badge-pill {
+  background: transparent;
+  border: 0;
 }

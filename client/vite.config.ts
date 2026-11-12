@@ -10,7 +10,7 @@ export default defineConfig({
     basicSsl(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
+      includeAssets: ['favicon.ico', 'favicon-32.png', 'apple-touch-icon.png', 'logo-blanco.png', 'logo-azul.png'],
       workbox: {
         // El wasm de MediaPipe (~14 MB) y los modelos son demasiado grandes para el precaché inicial:
         // se cachean en la primera carga (CacheFirst) y luego funcionan sin conexión.
@@ -31,11 +31,11 @@ export default defineConfig({
         ],
       },
       manifest: {
-        name: 'SMI GPS - Control de Asistencia',
+        name: 'SMI - Control de Asistencia',
         short_name: 'SMI Asistencia',
         description: 'Registro de entrada y salida con geolocalización en estaciones de trabajo',
-        theme_color: '#1e3a8a',
-        background_color: '#0f172a',
+        theme_color: '#1c42ba',
+        background_color: '#1c42ba',
         // Pantalla completa: oculta la barra superior (hora, batería) y la de navegación en Android.
         // display_override prueba 'fullscreen' primero y, si el sistema no la admite, usa 'standalone'.
         display: 'fullscreen',

@@ -150,13 +150,13 @@ class GeolocationService {
           let msg = 'No se pudo obtener la ubicación GPS.';
           switch (err.code) {
             case err.PERMISSION_DENIED:
-              msg = 'Permiso denegado. Debes autorizar el acceso a la ubicación en los ajustes de tu celular/navegador.';
+              msg = 'Permiso denegado. Debe autorizar el acceso a la ubicación en los ajustes de su celular o navegador.';
               break;
             case err.POSITION_UNAVAILABLE:
-              msg = 'Señal GPS no disponible. Asegúrate de tener activada la ubicación/GPS en tu celular.';
+              msg = 'Señal GPS no disponible. Active la ubicación (GPS) en su celular.';
               break;
             case err.TIMEOUT:
-              msg = 'Tiempo de espera agotado al conectar con el sensor GPS de tu celular.';
+              msg = 'Tiempo de espera agotado al conectar con el sensor GPS de su celular.';
               break;
           }
           reject(new Error(msg));

@@ -13,9 +13,11 @@ interface AuthImageProps {
   className?: string;
   /** Cargar de inmediato sin esperar a que sea visible (visores/ventanas emergentes) */
   eager?: boolean;
+  /** Se muestra en lugar de la imagen si no se puede cargar (p. ej. iniciales) */
+  fallback?: React.ReactNode;
 }
 
-export const AuthImage: React.FC<AuthImageProps> = ({ path, alt = '', className, eager = false }) => {
+export const AuthImage: React.FC<AuthImageProps> = ({ path, alt = '', className, eager = false, fallback }) => {
   const ref = useRef<HTMLImageElement | null>(null);
   const [visible, setVisible] = useState<boolean>(eager);
   const [src, setSrc] = useState<string | null>(null);
@@ -59,12 +61,14 @@ export const AuthImage: React.FC<AuthImageProps> = ({ path, alt = '', className,
     };
   }, [visible, path]);
 
+  if (failed && fallback) return <>{fallback}</>;
+
   return (
     <img
       ref={ref}
       src={src || TRANSPARENT_PIXEL}
       alt={failed ? 'Foto no disponible' : alt}
-      className={`${className ?? ''} ${src ? '' : 'bg-slate-200 animate-pulse'}`}
+      className={`${className ?? ''} ${src ? '' : failed ? 'bg-slate-200' : 'animate-pulse bg-slate-200'}`}
     />
   );
 };

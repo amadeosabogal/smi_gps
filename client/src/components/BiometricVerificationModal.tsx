@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { CheckCircle2, AlertTriangle, RefreshCw, X, ScanFace, RotateCcw, Eye } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, RefreshCw, X, RotateCcw, Eye } from 'lucide-react';
 import { faceRecognitionService } from '../services/faceRecognition';
 import { BlinkDetector, type BlinkPhase } from '../services/blinkDetector';
 import { eyeBlinkService } from '../services/eyeBlink';
@@ -22,7 +22,7 @@ type StepState = 'ready' | 'processing' | 'success' | 'fraud_mismatch' | 'no_fac
 
 // Tiempo máximo esperando el parpadeo antes de pedir reintentar (ms)
 const LIVENESS_TIMEOUT_MS = 20000;
-const LIVENESS_PROMPT = 'Mira a la cámara y parpadea una vez para verificar que eres tú';
+const LIVENESS_PROMPT = 'Mire a la cámara y parpadee una vez para verificar su identidad.';
 
 export const BiometricVerificationModal: React.FC<BiometricVerificationModalProps> = ({
   isOpen,
@@ -81,7 +81,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     setLivenessTimedOut(false);
     setBlinkPhase('calibrating');
     setStep('ready');
-    setStatusMessage('Iniciando cámara frontal...');
+    setStatusMessage('Iniciando cámara frontal…');
     setErrorMessage(null);
 
     // Si el stream ya existe y sigue activo, simplemente reactivar
@@ -125,7 +125,13 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
       }
     } catch (err: any) {
       console.error('Error al iniciar cámara:', err);
-      setErrorMessage(err.message || 'No se pudo acceder a la cámara frontal.');
+      setErrorMessage(
+        err?.name === 'NotAllowedError'
+          ? 'Se denegó el acceso a la cámara. Permítalo en los ajustes del navegador.'
+          : err?.name === 'NotFoundError'
+          ? 'No se encontró una cámara en este dispositivo.'
+          : 'No se pudo acceder a la cámara frontal.'
+      );
       setStatusMessage('Error de cámara');
     }
   }, []);
@@ -193,7 +199,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     }
 
     setStep('processing');
-    setStatusMessage('Analizando rostro en tiempo real...');
+    setStatusMessage('Analizando rostro…');
 
     // Permitir un microciclo de renderizado para mostrar la congelación y el loader
     await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 20)));
@@ -206,7 +212,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
       if (!detection) {
         setStep('no_face');
-        setStatusMessage('No se detectó un rostro claro en la captura.');
+        setStatusMessage('No se detectó un rostro claro. Intente de nuevo.');
         return;
       }
 
@@ -234,14 +240,14 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
       // 4. Caso A: el trabajador aún no tiene rostro enrolado (auto-enrolamiento, lo valida el servidor)
       if (!worker.facial_enrolado) {
-        setStatusMessage('Enrolando rostro por primera vez...');
+        setStatusMessage('Registrando su rostro por primera vez…');
         await api.enrolSelf(liveDescriptor, snapshot, tipo);
-        finishSuccess(100, `¡Rostro enrolado con éxito! Bienvenido ${worker.nombre.split(' ')[0]}.`);
+        finishSuccess(100, 'Rostro registrado correctamente.');
         return;
       }
 
       // 5. Caso B: el SERVIDOR compara contra el rostro enrolado (el navegador ya no conoce ese descriptor)
-      setStatusMessage('Verificando identidad...');
+      setStatusMessage('Verificando identidad…');
       const tServer = performance.now();
       const result = await api.verifyFace(liveDescriptor, snapshot, tipo);
       console.info(
@@ -259,9 +265,9 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
       }
     } catch (err: any) {
       console.error('Error al procesar biometría:', err);
-      setErrorMessage(err.message || 'Error durante la verificación.');
+      setErrorMessage(err.message || 'Ocurrió un error durante la verificación.');
       setStep('no_face');
-      setStatusMessage('Ocurrió un error. Intenta capturar nuevamente.');
+      setStatusMessage('Ocurrió un error. Intente de nuevo.');
     }
   };
 
@@ -340,252 +346,185 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
   const livenessHint =
     blinkModuleState === 'loading'
-      ? 'Preparando verificación de vida… (la primera vez puede tardar un poco)'
+      ? 'Preparando la verificación de vida. La primera vez puede tardar un poco.'
       : blinkModuleState === 'error'
-      ? 'No se pudo cargar la verificación de vida. Recarga la página e intenta de nuevo.'
+      ? 'No se pudo cargar la verificación de vida. Recargue la página e intente de nuevo.'
       : livenessTimedOut
-      ? 'No se detectó parpadeo. Presiona "Reintentar" y parpadea mirando a la cámara.'
+      ? 'No se detectó el parpadeo. Presione "Reintentar" y parpadee mirando a la cámara.'
       : blinkPhase === 'no_face'
-      ? 'No se ve tu rostro. Colócalo dentro del círculo.'
+      ? 'No se ve su rostro. Colóquelo dentro del recuadro.'
       : blinkPhase === 'eyes_closed'
       ? 'Parpadeo detectado…'
       : blinkPhase === 'waiting_blink'
-      ? 'Rostro detectado. Parpadea ahora 👁️'
+      ? 'Rostro detectado. Parpadee ahora.'
       : LIVENESS_PROMPT;
 
   if (!isOpen) return null;
 
+  const showDebug = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug');
+
+  // Color del mensaje de estado según el paso
+  const statusTone =
+    errorMessage || step === 'no_face' || step === 'fraud_mismatch'
+      ? 'border-l-red-700 bg-red-50 text-red-900'
+      : step === 'success'
+      ? 'border-l-green-700 bg-green-50 text-green-900'
+      : step === 'processing'
+      ? 'border-l-brand-600 bg-brand-50 text-brand-900'
+      : 'border-l-slate-400 bg-slate-50 text-slate-800';
+
+  const closeModal = () => {
+    stopCamera();
+    onClose();
+  };
+
   return (
-    <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4 font-sans animate-fade-in">
-      <div className="bg-slate-900 border border-slate-700 max-w-sm w-full rounded-3xl overflow-hidden shadow-2xl flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-3 sm:p-4">
+      <div className="flex w-full max-w-md flex-col overflow-hidden border border-slate-300 bg-white shadow-xl">
         {/* Cabecera */}
-        <div className="p-4 border-b border-slate-800 flex items-center justify-between text-white bg-slate-950/80">
-          <div className="flex items-center space-x-2.5">
-            <div
-              className={`w-9 h-9 rounded-xl flex items-center justify-center shadow-md transition-colors ${
-                step === 'success'
-                  ? 'bg-emerald-600'
-                  : step === 'fraud_mismatch'
-                  ? 'bg-rose-600'
-                  : 'bg-blue-600'
-              }`}
-            >
-              <ScanFace className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h3 className="font-extrabold text-sm text-white">Reconocimiento Facial</h3>
-              <p className="text-[11px] text-slate-400 capitalize">
-                {worker.nombre.split(' ')[0]} ({worker.codigo_empleado})
-              </p>
-            </div>
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">
+              Reconocimiento facial · {tipo === 'entrada' ? 'Entrada' : 'Salida'}
+            </h3>
+            <p className="text-sm text-slate-600">
+              {worker.nombre} ({worker.codigo_empleado})
+            </p>
           </div>
           <button
             type="button"
-            onClick={() => {
-              stopCamera();
-              onClose();
-            }}
-            className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-white transition cursor-pointer"
+            onClick={closeModal}
+            aria-label="Cerrar"
+            className="p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
           >
-            <X className="w-4 h-4" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 
-        {/* Visor de Cámara con Guía Biométrica */}
-        <div className="relative bg-slate-950 w-full h-84 flex items-center justify-center overflow-hidden">
-          {/* El elemento de video permanece SIEMPRE montado para evitar cualquier pantalla negra */}
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full h-full object-cover scale-x-[-1]"
-          />
+        {/* Visor de cámara */}
+        <div className="relative aspect-[4/3] w-full overflow-hidden bg-slate-900">
+          {/* El video permanece siempre montado para evitar pantallas negras */}
+          <video ref={videoRef} autoPlay playsInline muted className="h-full w-full scale-x-[-1] object-cover" />
 
-          {/* Imagen congelada con marca de agua (aparece suavemente encima del video cuando está lista) */}
-          {capturedPhoto && (
-            <img
-              src={capturedPhoto}
-              alt="Rostro capturado"
-              className="absolute inset-0 w-full h-full object-cover"
-            />
-          )}
+          {/* Imagen congelada con marca de agua */}
+          {capturedPhoto && <img src={capturedPhoto} alt="Rostro capturado" className="absolute inset-0 h-full w-full object-cover" />}
 
-          {/* Anillo de enfoque de rostro en modo listo */}
+          {/* Guía de encuadre */}
           {step === 'ready' && (
-            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
-              <div
-                className={`relative w-56 h-64 rounded-[45%] border-2 transition-all duration-300 flex items-center justify-center ${
-                  cameraReady
-                    ? 'border-emerald-400 shadow-[0_0_20px_rgba(52,211,153,0.35)]'
-                    : 'border-blue-400 border-dashed animate-pulse'
-                }`}
-              >
-                <div className="absolute w-full h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent animate-bounce opacity-70" />
-              </div>
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <div className={`h-[78%] w-[52%] border-2 ${cameraReady ? 'border-white/90' : 'border-dashed border-white/50'}`} />
             </div>
           )}
 
-          {/* Animación de escaneo biométrico durante el análisis */}
+          {/* Verificando */}
           {step === 'processing' && (
-            <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-[1px] flex flex-col items-center justify-center text-white space-y-2">
-              <div className="relative w-52 h-60 rounded-[45%] border-2 border-cyan-400 shadow-[0_0_25px_rgba(34,211,238,0.5)] flex items-center justify-center">
-                <div className="absolute w-full h-1 bg-cyan-400 animate-pulse shadow-[0_0_15px_#22d3ee]" />
-              </div>
-              <div className="flex items-center space-x-1.5 bg-slate-900/90 border border-slate-700/80 px-3 py-1 rounded-full shadow-lg">
-                <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-                <span className="text-[11px] font-bold text-cyan-200">Verificando rostro...</span>
-              </div>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-900/55 text-white">
+              <RefreshCw className="h-8 w-8 animate-spin" />
+              <span className="text-sm font-medium">Verificando identidad…</span>
             </div>
           )}
 
-          {/* Icono de éxito */}
+          {/* Resultado correcto */}
           {step === 'success' && (
-            <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-[1px] flex items-center justify-center">
-              <div className="w-20 h-20 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-2xl animate-scale-up">
-                <CheckCircle2 className="w-12 h-12" />
-              </div>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-green-900/70 text-white">
+              <CheckCircle2 className="h-14 w-14" />
+              <span className="text-base font-semibold">Identidad verificada</span>
             </div>
           )}
 
-          {/* Icono de mismatch/fraude */}
+          {/* El rostro no coincide */}
           {step === 'fraud_mismatch' && (
-            <div className="absolute inset-0 bg-rose-950/60 backdrop-blur-[1px] flex items-center justify-center">
-              <div className="w-20 h-20 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-2xl animate-scale-up">
-                <AlertTriangle className="w-12 h-12" />
-              </div>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-red-900/75 text-white">
+              <AlertTriangle className="h-14 w-14" />
+              <span className="text-base font-semibold">No coincide</span>
             </div>
           )}
 
-          {/* Canvas oculto para procesar foto */}
           <canvas ref={canvasRef} className="hidden" />
         </div>
 
-        {/* Barra de Estado y Botones de Acción */}
-        <div className="p-4 bg-slate-950 flex flex-col space-y-3">
-          <div
-            className={`p-3 rounded-2xl text-xs font-bold text-center border transition-all ${
-              errorMessage || step === 'no_face'
-                ? 'bg-rose-950/80 border-rose-500/60 text-rose-300'
-                : step === 'success'
-                ? 'bg-emerald-950/80 border-emerald-500/60 text-emerald-300'
-                : step === 'fraud_mismatch'
-                ? 'bg-rose-950/80 border-rose-500/60 text-rose-300'
-                : step === 'processing'
-                ? 'bg-blue-950/80 border-blue-500/60 text-blue-300'
-                : 'bg-slate-900 border-slate-800 text-slate-300'
-            }`}
-          >
+        {/* Estado y acciones */}
+        <div className="space-y-3 p-4">
+          <div className={`border-l-4 px-3 py-2.5 text-sm ${statusTone}`}>
             {step === 'processing' ? (
-              <div className="flex items-center justify-center space-x-2">
-                <RefreshCw className="w-4 h-4 animate-spin text-blue-400" />
-                <span>{statusMessage}</span>
-              </div>
+              <span className="flex items-center gap-2">
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                {statusMessage}
+              </span>
             ) : (
-              <span>{errorMessage || (step === 'ready' && cameraReady ? livenessHint : statusMessage)}</span>
+              errorMessage || (step === 'ready' && cameraReady ? livenessHint : statusMessage)
             )}
           </div>
 
-          {/* Prueba de vida: la captura es automática tras el parpadeo (sin botón para saltarla) */}
+          {/* Prueba de vida: la captura es automática tras el parpadeo */}
           {step === 'ready' && (
             <div
-              className={`w-full py-3.5 px-4 rounded-2xl text-xs font-extrabold flex items-center justify-center space-x-2 border transition-colors ${
+              className={`flex items-center justify-center gap-2 border px-3 py-2.5 text-sm font-medium ${
                 !cameraReady
-                  ? 'bg-slate-800 text-slate-500 border-slate-700'
+                  ? 'border-slate-300 bg-slate-50 text-slate-500'
                   : livenessTimedOut
-                  ? 'bg-rose-950/80 text-rose-300 border-rose-500/60'
+                  ? 'border-red-300 bg-red-50 text-red-800'
                   : blinkPhase === 'eyes_closed'
-                  ? 'bg-emerald-600 text-white border-emerald-400'
-                  : 'bg-slate-900 text-emerald-300 border-emerald-500/40'
+                  ? 'border-brand-600 bg-brand-600 text-white'
+                  : 'border-brand-200 bg-brand-50 text-brand-800'
               }`}
             >
-              <Eye className={`w-4 h-4 ${cameraReady && !livenessTimedOut ? 'animate-pulse' : ''}`} />
+              <Eye className="h-4 w-4" />
               <span>
                 {!cameraReady
                   ? errorMessage
                     ? 'Cámara no disponible'
-                    : 'Iniciando cámara...'
+                    : 'Iniciando cámara…'
                   : blinkModuleState === 'loading'
-                  ? 'Preparando verificación...'
+                  ? 'Preparando verificación…'
                   : blinkModuleState === 'error'
                   ? 'Verificación no disponible'
                   : livenessTimedOut
                   ? 'Tiempo agotado'
-                  : 'Esperando parpadeo...'}
+                  : 'Esperando parpadeo…'}
               </span>
             </div>
           )}
 
-          {/* Reintentar tras tiempo agotado sin parpadeo */}
           {step === 'ready' && livenessTimedOut && (
-            <button
-              type="button"
-              onClick={resumeCamera}
-              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center justify-center space-x-2 transition cursor-pointer shadow-lg active:scale-95"
-            >
-              <RotateCcw className="w-4 h-4" />
-              <span>Reintentar</span>
+            <button type="button" onClick={resumeCamera} className="btn-primary w-full">
+              <RotateCcw className="h-4 w-4" />
+              Reintentar
             </button>
           )}
 
-          {/* En caso de no detectar rostro claro */}
           {step === 'no_face' && (
-            <button
-              type="button"
-              onClick={resumeCamera}
-              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center justify-center space-x-2 transition cursor-pointer shadow-lg active:scale-95"
-            >
-              <RotateCcw className="w-4 h-4" />
-              <span>Tomar otra foto</span>
+            <button type="button" onClick={resumeCamera} className="btn-primary w-full">
+              <RotateCcw className="h-4 w-4" />
+              Volver a intentar
             </button>
           )}
 
-          {/* En caso de desajuste de identidad */}
           {step === 'fraud_mismatch' && (
             <div className="space-y-2">
-              <p className="text-[11px] text-rose-400 text-center font-medium">
-                ⛔ Tu rostro no coincide con el perfil asignado a este trabajador.
-              </p>
+              <p className="text-sm text-red-800">Su rostro no coincide con el perfil asignado a este trabajador.</p>
               <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={startCamera}
-                  className="py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl transition cursor-pointer active:scale-95"
-                >
+                <button type="button" onClick={startCamera} className="btn-primary">
                   Reintentar
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    stopCamera();
-                    onClose();
-                  }}
-                  className="py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl transition cursor-pointer active:scale-95"
-                >
+                <button type="button" onClick={closeModal} className="btn-secondary">
                   Cerrar
                 </button>
               </div>
             </div>
           )}
 
-          {/* Indicador de estado */}
-          <div className="flex items-center justify-between text-[11px] text-slate-400 px-1 pt-1">
-            <span className="flex items-center gap-1.5">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  cameraReady ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'
-                }`}
-              />
-              <span>{cameraReady ? 'Cámara lista' : 'Preparando'}</span>
+          <div className="flex items-center justify-between border-t border-slate-200 pt-3 text-sm text-slate-600">
+            <span className="flex items-center gap-2">
+              <span className={`h-2 w-2 ${cameraReady ? 'bg-green-600' : 'bg-slate-400'}`} />
+              {cameraReady ? 'Cámara lista' : 'Preparando'}
             </span>
-            <span className="font-mono text-[10px] text-slate-500">
-              {similarityScore > 0 ? `Similitud: ${similarityScore}%` : 'Biometría 1:1'}
-            </span>
+            <span className="tabular-nums">{similarityScore > 0 ? `Similitud: ${similarityScore}%` : 'Verificación 1:1'}</span>
           </div>
-          {/* Diagnóstico de la prueba de vida (valores en vivo) */}
-          <div className="text-center font-mono text-[10px] text-slate-500 min-h-[14px]">
-            {step === 'ready' && cameraReady ? livenessDebug : ''}
-          </div>
+
+          {showDebug && step === 'ready' && cameraReady && (
+            <p className="text-center text-xs tabular-nums text-slate-400">{livenessDebug}</p>
+          )}
         </div>
       </div>
     </div>

@@ -4,6 +4,8 @@ import { socket, connectSocket, disconnectSocket } from '../services/socket';
 import { LiveMap } from '../components/LiveMap';
 import { GoogleLiveMap } from '../components/GoogleLiveMap';
 import { EnrolFaceModal } from '../components/EnrolFaceModal';
+import { AuthLayout } from '../components/AuthLayout';
+import { BrandLogo } from '../components/BrandLogo';
 import { AuthImage } from '../components/AuthImage';
 import type {
   EstacionTrabajo,
@@ -14,20 +16,13 @@ import type {
   AuditoriaFraudeFacial,
 } from '../types';
 import {
-  Users,
   MapPin,
   ShieldCheck,
-  AlertTriangle,
-  Clock,
   Download,
   Search,
   Plus,
   Layers,
-  FileSpreadsheet,
-  Lock,
   LogOut,
-  Shield,
-  Camera,
   X,
   Link,
   RefreshCw,
@@ -46,11 +41,16 @@ const daysAgo = (n: number) => {
 };
 const LOGS_PAGE_SIZE = 50;
 
+// Nombre legible de los tipos de evento de la auditoría
+const etiquetaEvento = (tipo: string) =>
+  ({ SUPLANTACION_ROSTRO: 'Suplantación de rostro', FALLA_PRUEBA_VIDA: 'Falla en la prueba de vida' } as Record<string, string>)[tipo] ||
+  tipo.charAt(0) + tipo.slice(1).toLowerCase().replace(/_/g, ' ');
+
 // Mensajes rápidos para las alertas al celular del trabajador
 const ALERT_PRESETS = [
-  'Estás fuera de tu zona de trabajo. Regresa a tu estación asignada.',
-  'Por favor comunícate con tu supervisor lo antes posible.',
-  'Recuerda registrar tu salida al terminar tu turno.',
+  'Se encuentra fuera de su zona de trabajo. Regrese a su estación asignada.',
+  'Por favor, comuníquese con su supervisor lo antes posible.',
+  'Recuerde registrar su salida al terminar su turno.',
 ];
 
 // Formatea milisegundos como HH:MM:SS (las horas pueden pasar de 24)
@@ -71,7 +71,7 @@ const ElapsedTimer: React.FC<{ since: string; offsetMs: number }> = ({ since, of
     return () => clearInterval(id);
   }, []);
   return (
-    <span className="font-mono font-extrabold text-sm text-blue-700 tabular-nums">
+    <span className="font-mono font-bold text-sm text-blue-700 tabular-nums">
       {formatElapsed(now + offsetMs - new Date(since).getTime())}
     </span>
   );
@@ -362,11 +362,11 @@ export const AdminPage: React.FC = () => {
     }, 30000);
 
     const onConnect = () => {
-      console.log('⚡ Socket conectado al panel admin');
+      console.log('Socket conectado al panel admin');
       setIsSocketConnected(true);
     };
     const onDisconnect = () => {
-      console.warn('❌ Socket desconectado del panel admin');
+      console.warn('Socket desconectado del panel admin');
       setIsSocketConnected(false);
     };
 
@@ -375,7 +375,7 @@ export const AdminPage: React.FC = () => {
 
     // Evento de Telemetría GPS en tiempo real
     socket.on('location_ping', (data: any) => {
-      console.log('📡 Telemetría recibida en vivo:', data);
+      console.log('Telemetría recibida en vivo:', data);
       setLiveWorkers((prev) =>
         prev.map((worker) => {
           if (worker.usuario_id === data.usuarioId) {
@@ -398,19 +398,19 @@ export const AdminPage: React.FC = () => {
 
     // Evento de Registro de Asistencia (Entrada / Salida)
     socket.on('attendance_event', (eventData: any) => {
-      console.log('🔔 Evento de asistencia recibido en socket:', eventData);
+      console.log('Evento de asistencia recibido en socket:', eventData);
       loadLive();
       scheduleHeavyReload();
 
       const ahora = new Date().toLocaleTimeString();
       if (eventData?.tipo === 'CHECK_IN') {
         setRecentNotification({
-          texto: `🟢 Entrada registrada en tiempo real (${ahora})`,
+          texto: `Entrada registrada en tiempo real (${ahora})`,
           fecha: ahora,
         });
       } else if (eventData?.tipo === 'CHECK_OUT') {
         setRecentNotification({
-          texto: `🔴 Salida registrada. GPS detenido (${ahora})`,
+          texto: `Salida registrada. GPS detenido (${ahora})`,
           fecha: ahora,
         });
       }
@@ -418,11 +418,11 @@ export const AdminPage: React.FC = () => {
 
     // Evento de Alerta de Fraude Facial
     socket.on('fraud_alert', (fraudEvent: any) => {
-      console.warn('🚨 Alerta de fraude facial recibida:', fraudEvent);
+      console.warn('Alerta de fraude facial recibida:', fraudEvent);
       scheduleHeavyReload();
       const ahora = new Date().toLocaleTimeString();
       setRecentNotification({
-        texto: `🚨 ALERTA: Intento de suplantación facial detectado (${
+        texto: `ALERTA: Intento de suplantación facial detectado (${
           fraudEvent?.similitudObtenida ? Math.round(fraudEvent.similitudObtenida) + '%' : 'No coincide'
         }) a las ${ahora}`,
         fecha: ahora,
@@ -433,12 +433,12 @@ export const AdminPage: React.FC = () => {
     socket.on('alerta_leida', (d: any) => {
       const nombre = liveWorkersRef.current.find((w) => w.usuario_id === d?.usuarioId)?.nombre_usuario || 'El trabajador';
       const hora = new Date().toLocaleTimeString();
-      setRecentNotification({ texto: `✓ ${nombre} leyó la alerta (${hora})`, fecha: hora });
+      setRecentNotification({ texto: `${nombre} leyó la alerta (${hora})`, fecha: hora });
     });
 
     // Evento de Enrolamiento Facial
     socket.on('user_face_enrolled', (data: any) => {
-      console.log('👤 Rostro enrolado en tiempo real:', data);
+      console.log('Rostro enrolado en tiempo real:', data);
       scheduleHeavyReload();
     });
 
@@ -470,11 +470,11 @@ export const AdminPage: React.FC = () => {
       const hora = new Date().toLocaleTimeString();
       let texto: string;
       if (r.dispositivos === 0 && !r.appAbierta) {
-        texto = `⚠️ ${r.trabajador} no tiene las alertas activadas en su celular: solo la verá si abre la app (${hora})`;
+        texto = `${r.trabajador} no tiene las alertas activadas en su celular: solo la verá si abre la app (${hora})`;
       } else if (r.dispositivos > 0 && r.entregadosAlServicioPush === 0 && !r.appAbierta) {
-        texto = `⚠️ No se pudo entregar la alerta a ${r.trabajador}: su celular no respondió (${hora})`;
+        texto = `No se pudo entregar la alerta a ${r.trabajador}: su celular no respondió (${hora})`;
       } else {
-        texto = `🔔 Alerta enviada a ${r.trabajador}${r.appAbierta ? ' (tiene la app abierta)' : ''} (${hora})`;
+        texto = `Alerta enviada a ${r.trabajador}${r.appAbierta ? ' (tiene la app abierta)' : ''} (${hora})`;
       }
       setRecentNotification({ texto, fecha: hora });
       setAlertTarget(null);
@@ -697,275 +697,179 @@ export const AdminPage: React.FC = () => {
     }
   };
 
-  // Admin Login Screen
+  // Pantalla de ingreso
   if (!isAdminAuthenticated) {
     return (
-      <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center px-4 py-8 font-sans">
-        <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl border border-slate-200">
-          <div className="flex flex-col items-center text-center mb-6">
-            <div className="w-14 h-14 rounded-2xl bg-slate-900 flex items-center justify-center shadow-lg shadow-slate-900/30 mb-3 text-blue-500">
-              <Shield className="w-8 h-8" />
-            </div>
-            <h2 className="text-xl font-extrabold text-slate-900">Consola Administrativa</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Acceso Exclusivo de Supervisión SMI</p>
+      <AuthLayout
+        titulo="Acceso al panel"
+        subtitulo="Ingrese con su código de usuario y su clave."
+        panelTitulo="Panel de control"
+        panelTexto="Supervise en tiempo real al personal en turno, revise el historial de asistencia y administre estaciones y datos biométricos."
+      >
+        <form onSubmit={handleAdminLogin} className="space-y-5">
+          <div>
+            <label htmlFor="codigo" className="field-label">
+              Código de usuario
+            </label>
+            <input
+              id="codigo"
+              type="text"
+              value={adminCode}
+              onChange={(e) => setAdminCode(e.target.value)}
+              placeholder="Ej.: ADM-001"
+              autoComplete="username"
+              className="field"
+            />
           </div>
-
-          <form onSubmit={handleAdminLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1.5">
-                Código de Usuario:
-              </label>
-              <input
-                type="text"
-                value={adminCode}
-                onChange={(e) => setAdminCode(e.target.value)}
-                placeholder="ej. ADM-001"
-                autoComplete="username"
-                className="w-full bg-slate-50 border border-slate-300 text-slate-900 text-sm font-bold rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1.5">
-                Clave de Seguridad:
-              </label>
-              <div className="relative">
-                <input
-                  type="password"
-                  value={adminPin}
-                  onChange={(e) => setAdminPin(e.target.value)}
-                  placeholder="Introduce tu clave..."
-                  autoComplete="current-password"
-                  className="w-full bg-slate-50 border border-slate-300 text-slate-900 text-sm font-bold rounded-xl px-4 py-2.5 pl-10 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                />
-                <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={adminLoginLoading || !adminCode.trim() || !adminPin}
-              className="w-full py-3 disabled:opacity-60 bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-sm rounded-xl shadow-lg transition transform active:scale-95 cursor-pointer"
-            >
-              {adminLoginLoading ? 'Verificando...' : 'Iniciar Sesión en Panel'}
-            </button>
-          </form>
-        </div>
-
-        <p className="text-[11px] text-slate-500 text-center mt-6">
-          SMI GPS Asistencia & Geocercas • Servidor SQL Server [GPS_SMI]
-        </p>
-      </div>
+          <div>
+            <label htmlFor="clave" className="field-label">
+              Clave
+            </label>
+            <input
+              id="clave"
+              type="password"
+              value={adminPin}
+              onChange={(e) => setAdminPin(e.target.value)}
+              placeholder="Ingrese su clave"
+              autoComplete="current-password"
+              className="field"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={adminLoginLoading || !adminCode.trim() || !adminPin}
+            className="btn-primary w-full"
+          >
+            {adminLoginLoading ? 'Verificando…' : 'Ingresar'}
+          </button>
+        </form>
+      </AuthLayout>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col font-sans">
-      {/* Dedicated Admin Header */}
-      <header className="bg-slate-900 border-b border-slate-800 text-white sticky top-0 z-50 shadow-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-              <MapPin className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="font-extrabold text-xl tracking-tight text-white">SMI</span>
-                <span className="text-xs bg-blue-500/20 text-blue-300 font-semibold px-2 py-0.5 rounded-full border border-blue-500/30">
-                  Panel Administrativo
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 font-medium">Monitoreo & Geocercas en Tiempo Real</p>
+    <div className="flex min-h-screen flex-col bg-slate-100">
+      {/* Encabezado institucional */}
+      <header className="sticky top-0 z-50 bg-brand-600 text-white">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center gap-4">
+            <BrandLogo variant="blanco" className="h-10 w-auto" />
+            <div className="hidden border-l border-white/30 pl-4 sm:block">
+              <p className="text-base font-semibold leading-tight">Panel de control</p>
+              <p className="text-sm leading-tight text-brand-100">Monitoreo de asistencia y geocercas</p>
             </div>
           </div>
 
-          <div className="flex items-center space-x-3 text-xs">
-            {/* Live socket pill */}
-            <div className="flex items-center space-x-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  isSocketConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'
-                }`}
-              />
-              <span className="text-slate-300 font-medium">
-                {isSocketConnected ? 'En Vivo' : 'Desconectado'}
-              </span>
-            </div>
-
-            {/* Logout button */}
+          <div className="flex items-center gap-4 text-sm">
+            <span className="hidden items-center gap-2 text-brand-100 sm:flex">
+              <span className={`h-2 w-2 ${isSocketConnected ? 'bg-green-400' : 'bg-red-400'}`} />
+              {isSocketConnected ? 'Conectado en vivo' : 'Sin conexión'}
+            </span>
             <button
               onClick={handleAdminLogout}
-              className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg border border-slate-700 transition"
+              className="inline-flex items-center gap-2 rounded border border-white/40 px-3 py-1.5 font-medium transition-colors hover:bg-white/10"
             >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Cerrar Sesión</span>
+              <LogOut className="h-4 w-4" />
+              Cerrar sesión
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Admin View */}
-      <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full">
+      {/* Contenido */}
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
         {loading ? (
-          <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-3">
-            <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Conectando con base de datos SQL Server...
-            </p>
+          <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3">
+            <div className="h-10 w-10 animate-spin rounded-full border-4 border-brand-600 border-t-transparent" />
+            <p className="text-sm text-slate-600">Conectando con la base de datos…</p>
           </div>
         ) : (
           <>
-            {/* Notificación Instantánea de Telemetría o Asistencia */}
+            {/* Aviso en tiempo real (entradas, salidas, alertas) */}
             {recentNotification && (
-              <div className="mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white flex items-center justify-between text-xs font-bold shadow-lg shadow-blue-500/20 border border-blue-400/30">
-                <div className="flex items-center space-x-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-300 animate-ping"></span>
-                  <span>{recentNotification.texto}</span>
-                </div>
+              <div className="mb-4 flex items-center justify-between gap-4 border border-slate-300 border-l-4 border-l-brand-600 bg-white px-4 py-3 text-sm text-slate-800">
+                <span>{recentNotification.texto}</span>
                 <button
                   onClick={() => setRecentNotification(null)}
-                  className="text-white/80 hover:text-white text-xs underline font-normal cursor-pointer"
+                  className="flex-shrink-0 font-medium text-brand-700 hover:underline"
                 >
                   Cerrar
                 </button>
               </div>
             )}
 
-            {/* Metric Cards */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Personal</p>
-                  <h3 className="text-2xl font-black text-slate-800 mt-1">{summary.totalTrabajadores}</h3>
+            {/* Indicadores */}
+            <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+              {[
+                { label: 'Personal total', value: summary.totalTrabajadores, accent: 'border-t-slate-400', color: 'text-slate-900' },
+                { label: 'En turno', value: summary.activosConteo, accent: 'border-t-brand-600', color: 'text-brand-700' },
+                { label: 'En su estación', value: summary.dentroEstacionConteo, accent: 'border-t-green-700', color: 'text-green-800' },
+                { label: 'Fuera de zona o en tránsito', value: summary.fueraEstacionConteo, accent: 'border-t-amber-600', color: 'text-amber-800' },
+              ].map((s) => (
+                <div key={s.label} className={`panel border-t-4 p-4 ${s.accent}`}>
+                  <p className="text-sm text-slate-600">{s.label}</p>
+                  <p className={`mt-1 text-3xl font-semibold tabular-nums ${s.color}`}>{s.value}</p>
                 </div>
-                <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-                  <Users className="w-6 h-6" />
-                </div>
-              </div>
-
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">En Turno Activo</p>
-                  <h3 className="text-2xl font-black text-slate-800 mt-1">{summary.activosConteo}</h3>
-                </div>
-                <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-                  <Clock className="w-6 h-6" />
-                </div>
-              </div>
-
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wider">En Estación Asignada</p>
-                  <h3 className="text-2xl font-black text-emerald-600 mt-1">{summary.dentroEstacionConteo}</h3>
-                </div>
-                <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                  <ShieldCheck className="w-6 h-6" />
-                </div>
-              </div>
-
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold text-amber-600 uppercase tracking-wider">Fuera de Zona / Tránsito</p>
-                  <h3 className="text-2xl font-black text-amber-600 mt-1">{summary.fueraEstacionConteo}</h3>
-                </div>
-                <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-                  <AlertTriangle className="w-6 h-6" />
-                </div>
-              </div>
+              ))}
             </div>
 
-            {/* Navigation Tabs */}
-            <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-4 bg-white p-3 rounded-2xl border border-slate-200 shadow-sm mb-6">
-              <div className="flex flex-wrap items-center gap-1">
+            {/* Pestañas */}
+            <nav className="mb-4 flex overflow-x-auto border-b border-slate-300 sm:flex-wrap">
+              {(
+                [
+                  { id: 'map', label: 'Mapa en tiempo real' },
+                  { id: 'logs', label: `Historial de asistencia (${logsTotal})` },
+                  { id: 'workers', label: `Personal y biometría (${workersList.length})` },
+                  { id: 'fraud', label: 'Alertas de fraude', badge: fraudLogs.length },
+                  { id: 'stations', label: `Estaciones (${workstations.length})` },
+                ] as const
+              ).map((t) => (
                 <button
-                  onClick={() => setActiveTab('map')}
-                  className={`flex items-center space-x-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === 'map' ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100'
+                  key={t.id}
+                  onClick={() => setActiveTab(t.id)}
+                  className={`-mb-px flex flex-shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
+                    activeTab === t.id
+                      ? 'border-brand-600 text-brand-700'
+                      : 'border-transparent text-slate-600 hover:border-slate-300 hover:text-slate-900'
                   }`}
                 >
-                  <MapPin className="w-4 h-4" />
-                  <span>Mapa en Tiempo Real</span>
-                </button>
-                <button
-                  onClick={() => setActiveTab('logs')}
-                  className={`flex items-center space-x-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === 'logs' ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  <FileSpreadsheet className="w-4 h-4" />
-                  <span>Historial Asistencia ({logsTotal})</span>
-                </button>
-                <button
-                  onClick={() => setActiveTab('workers')}
-                  className={`flex items-center space-x-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === 'workers' ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  <UserCheck className="w-4 h-4" />
-                  <span>Personal & Biometría ({workersList.length})</span>
-                </button>
-                <button
-                  onClick={() => setActiveTab('fraud')}
-                  className={`flex items-center space-x-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === 'fraud'
-                      ? 'bg-rose-600 text-white shadow'
-                      : fraudLogs.length > 0
-                      ? 'text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200'
-                      : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  <ShieldAlert className="w-4 h-4" />
-                  <span>Alertas de Fraude</span>
-                  {fraudLogs.length > 0 && (
-                    <span
-                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
-                        activeTab === 'fraud' ? 'bg-white text-rose-600' : 'bg-rose-600 text-white animate-pulse'
-                      }`}
-                    >
-                      {fraudLogs.length}
-                    </span>
+                  {t.label}
+                  {'badge' in t && t.badge > 0 && (
+                    <span className="min-w-5 bg-red-700 px-1.5 text-center text-xs font-semibold text-white">{t.badge}</span>
                   )}
                 </button>
-                <button
-                  onClick={() => setActiveTab('stations')}
-                  className={`flex items-center space-x-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === 'stations' ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  <Layers className="w-4 h-4" />
-                  <span>Estaciones ({workstations.length})</span>
-                </button>
+              ))}
+            </nav>
+
+            {/* Búsqueda y acciones de la pestaña */}
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              {activeTab !== 'stations' ? (
+              <div className="relative w-full sm:w-80">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Buscar trabajador o código"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="field py-2 pl-9"
+                />
               </div>
+              ) : (
+                <div />
+              )}
 
-              <div className="flex items-center space-x-2">
-                <div className="relative flex-1 sm:w-64">
-                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="text"
-                    placeholder="Buscar trabajador o código..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                  />
-                </div>
-
+              <div className="flex items-center gap-2">
                 {activeTab === 'logs' && (
-                  <button
-                    onClick={handleExportCSV}
-                    disabled={exporting}
-                    className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl shadow-sm transition"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>{exporting ? 'Exportando…' : 'Exportar CSV'}</span>
+                  <button onClick={handleExportCSV} disabled={exporting} className="btn-secondary whitespace-nowrap">
+                    <Download className="h-4 w-4" />
+                    {exporting ? 'Exportando…' : 'Exportar CSV'}
                   </button>
                 )}
 
                 {activeTab === 'stations' && (
-                  <button
-                    onClick={() => setShowNewStationModal(true)}
-                    className="flex items-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-sm transition"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Nueva Estación</span>
+                  <button onClick={() => setShowNewStationModal(true)} className="btn-primary whitespace-nowrap">
+                    <Plus className="h-4 w-4" />
+                    Nueva estación
                   </button>
                 )}
               </div>
@@ -984,21 +888,21 @@ export const AdminPage: React.FC = () => {
                     <div className="flex items-center space-x-1 bg-slate-100 p-0.5 rounded-lg">
                       <button
                         onClick={() => setMapProvider('google')}
-                        className={`px-3 py-1 rounded-md font-extrabold text-[11px] transition cursor-pointer ${
-                          mapProvider === 'google'
-                            ? 'bg-blue-600 text-white shadow-sm'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
+                        className={`px-3 py-1 rounded-md font-bold text-xs transition cursor-pointer ${
+ mapProvider === 'google'
+ ? 'bg-blue-600 text-white shadow-sm'
+ : 'text-slate-600 hover:text-slate-900'
+ }`}
                       >
                         Google Maps Oficial
                       </button>
                       <button
                         onClick={() => setMapProvider('leaflet')}
-                        className={`px-3 py-1 rounded-md font-semibold text-[11px] transition cursor-pointer ${
-                          mapProvider === 'leaflet'
-                            ? 'bg-blue-600 text-white shadow-sm'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
+                        className={`px-3 py-1 rounded-md font-semibold text-xs transition cursor-pointer ${
+ mapProvider === 'leaflet'
+ ? 'bg-blue-600 text-white shadow-sm'
+ : 'text-slate-600 hover:text-slate-900'
+ }`}
                       >
                         OpenStreetMap
                       </button>
@@ -1033,7 +937,7 @@ export const AdminPage: React.FC = () => {
                     <h3 className="font-bold text-sm text-slate-800">
                       Personal en Turno ({activeWorkers.length})
                     </h3>
-                    <span className="text-[10px] text-slate-400 font-semibold uppercase">SQL Server [GPS_SMI]</span>
+                    
                   </div>
 
                   <div className="flex-1 overflow-y-auto divide-y divide-slate-100 mt-2 pr-1 space-y-2">
@@ -1049,34 +953,34 @@ export const AdminPage: React.FC = () => {
                             key={worker.usuario_id}
                             onClick={() => setSelectedWorker(worker)}
                             className={`p-3 rounded-xl transition cursor-pointer ${
-                              selectedWorker?.usuario_id === worker.usuario_id
-                                ? 'bg-blue-50 border border-blue-200'
-                                : 'hover:bg-slate-50'
-                            }`}
+ selectedWorker?.usuario_id === worker.usuario_id
+ ? 'bg-blue-50 border border-blue-200'
+ : 'hover:bg-slate-50'
+ }`}
                           >
                             <div className="flex items-start justify-between">
                               <div>
                                 <div className="flex items-center space-x-2">
                                   <h4 className="font-bold text-xs text-slate-900">{worker.nombre_usuario}</h4>
-                                  <span className="text-[10px] font-mono font-bold bg-slate-100 px-1.5 py-0.2 rounded text-slate-600">
+                                  <span className="text-xs font-mono font-bold bg-slate-100 px-1.5 py-0.2 rounded text-slate-600">
                                     {worker.codigo_empleado}
                                   </span>
                                 </div>
-                                <p className="text-[11px] text-slate-500">{worker.cargo}</p>
+                                <p className="text-xs text-slate-500">{worker.cargo}</p>
                               </div>
 
                               {isActive ? (
                                 <span
-                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                    isInside
-                                      ? 'bg-emerald-100 text-emerald-800'
-                                      : 'bg-amber-100 text-amber-800'
-                                  }`}
+                                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+ isInside
+ ? 'bg-emerald-100 text-emerald-800'
+ : 'bg-amber-100 text-amber-800'
+ }`}
                                 >
                                   {isInside ? 'En Estación' : 'Fuera de Zona'}
                                 </span>
                               ) : (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-400">
+                                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-slate-100 text-slate-400">
                                   Inactivo
                                 </span>
                               )}
@@ -1085,10 +989,10 @@ export const AdminPage: React.FC = () => {
                             {isActive && worker.hora_ingreso && (
                               <div className="mt-2 flex items-center justify-between bg-blue-50 border border-blue-100 rounded-lg px-2.5 py-1.5">
                                 <div className="flex flex-col leading-tight">
-                                  <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wide">
+                                  <span className="text-xs font-bold text-blue-600 uppercase tracking-wide">
                                     ⏱ Tiempo en turno
                                   </span>
-                                  <span className="text-[10px] text-slate-500">
+                                  <span className="text-xs text-slate-500">
                                     Ingresó a las{' '}
                                     {new Date(worker.hora_ingreso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                   </span>
@@ -1100,9 +1004,9 @@ export const AdminPage: React.FC = () => {
                             {isActive && (
                               <div className="mt-2 flex items-center justify-between gap-2">
                                 <span
-                                  className={`text-[10px] font-semibold ${
-                                    worker.push_activo ? 'text-emerald-600' : 'text-slate-400'
-                                  }`}
+                                  className={`text-xs font-semibold ${
+ worker.push_activo ? 'text-emerald-600' : 'text-slate-400'
+ }`}
                                   title={
                                     worker.push_activo
                                       ? 'Este trabajador activó las alertas en su celular'
@@ -1112,8 +1016,8 @@ export const AdminPage: React.FC = () => {
                                   {worker.push_activo === undefined
                                     ? ''
                                     : worker.push_activo
-                                    ? '🔔 Alertas activadas'
-                                    : '🔕 Sin alertas activadas'}
+                                    ? 'Alertas activadas'
+                                    : 'Sin alertas activadas'}
                                 </span>
                                 <button
                                   type="button"
@@ -1122,21 +1026,21 @@ export const AdminPage: React.FC = () => {
                                     setAlertTarget(worker);
                                     setAlertMsg(isInside ? '' : ALERT_PRESETS[0]);
                                   }}
-                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition active:scale-95 ${
-                                    isInside
-                                      ? 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-                                      : 'bg-amber-500 text-white border-amber-600 hover:bg-amber-600 shadow-sm'
-                                  }`}
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition active:scale-95 ${
+ isInside
+ ? 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+ : 'bg-amber-500 text-white border-amber-600 hover:bg-amber-600 shadow-sm'
+ }`}
                                 >
-                                  🔔 Enviar alerta
+                                  Enviar alerta
                                 </button>
                               </div>
                             )}
 
                             {isActive && (
-                              <div className="mt-2 text-[11px] text-slate-500 bg-white p-2 rounded-lg border border-slate-100 flex items-center justify-between">
+                              <div className="mt-2 text-xs text-slate-500 bg-white p-2 rounded-lg border border-slate-100 flex items-center justify-between">
                                 <span className="font-medium text-slate-700">
-                                  {worker.estacion_nombre ? `📍 ${worker.estacion_nombre}` : '📍 Sin estación fija'}
+                                  {worker.estacion_nombre ? `${worker.estacion_nombre}` : 'Sin estación fija'}
                                 </span>
                                 <span className="text-blue-600 font-semibold">
                                   ±{Math.round(worker.precision || 10)}m
@@ -1157,7 +1061,7 @@ export const AdminPage: React.FC = () => {
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                 {/* Filtro por fechas */}
                 <div className="flex flex-wrap items-end gap-3 p-3 border-b border-slate-100 bg-slate-50/60">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wide">
                     Desde
                     <input
                       type="date"
@@ -1170,7 +1074,7 @@ export const AdminPage: React.FC = () => {
                       className="block mt-1 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
                   </label>
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wide">
                     Hasta
                     <input
                       type="date"
@@ -1197,7 +1101,7 @@ export const AdminPage: React.FC = () => {
                           setLogsHasta(toInputDate(new Date()));
                           setLogsPage(0);
                         }}
-                        className="px-2.5 py-1 text-[11px] font-bold bg-white border border-slate-300 hover:bg-blue-600 hover:border-blue-600 hover:text-white text-slate-600 rounded-lg transition"
+                        className="px-2.5 py-1 text-xs font-bold bg-white border border-slate-300 hover:bg-blue-600 hover:border-blue-600 hover:text-white text-slate-600 rounded-lg transition"
                       >
                         {r.label}
                       </button>
@@ -1209,7 +1113,7 @@ export const AdminPage: React.FC = () => {
                         setLogsHasta('');
                         setLogsPage(0);
                       }}
-                      className="px-2.5 py-1 text-[11px] font-bold bg-white border border-slate-300 hover:bg-blue-600 hover:border-blue-600 hover:text-white text-slate-600 rounded-lg transition"
+                      className="px-2.5 py-1 text-xs font-bold bg-white border border-slate-300 hover:bg-blue-600 hover:border-blue-600 hover:text-white text-slate-600 rounded-lg transition"
                     >
                       Todo
                     </button>
@@ -1218,7 +1122,7 @@ export const AdminPage: React.FC = () => {
 
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs text-slate-600">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase font-semibold text-[10px] tracking-wider">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase font-semibold text-xs tracking-wider">
                       <tr>
                         <th className="px-4 py-3">Código</th>
                         <th className="px-4 py-3">Trabajador</th>
@@ -1280,19 +1184,16 @@ export const AdminPage: React.FC = () => {
                                     })
                                   }
                                   title="Ver evidencia de entrada"
-                                  className="group relative inline-flex items-center justify-center p-0.5 rounded-lg border-2 border-emerald-500 hover:border-emerald-600 bg-emerald-50 transition transform hover:scale-105 cursor-pointer shadow-sm"
+                                  className="inline-flex border border-slate-300 bg-white p-0.5 transition-colors hover:border-brand-600"
                                 >
                                   <AuthImage
                                     path={`/photos/attendance/${log.id}/in`}
                                     alt="Foto Entrada"
                                     className="w-10 h-10 object-cover rounded-md"
                                   />
-                                  <div className="absolute inset-0 bg-slate-900/30 group-hover:bg-slate-900/10 rounded-md flex items-center justify-center transition">
-                                    <Camera className="w-3.5 h-3.5 text-white drop-shadow" />
-                                  </div>
                                 </button>
                               ) : (
-                                <span className="text-[10px] text-slate-400 italic">Sin foto</span>
+                                <span className="text-xs text-slate-400 italic">Sin foto</span>
                               )}
                             </td>
                             <td className="px-4 py-3 text-slate-700">
@@ -1326,19 +1227,16 @@ export const AdminPage: React.FC = () => {
                                     })
                                   }
                                   title="Ver evidencia de salida"
-                                  className="group relative inline-flex items-center justify-center p-0.5 rounded-lg border-2 border-rose-500 hover:border-rose-600 bg-rose-50 transition transform hover:scale-105 cursor-pointer shadow-sm"
+                                  className="inline-flex border border-slate-300 bg-white p-0.5 transition-colors hover:border-brand-600"
                                 >
                                   <AuthImage
                                     path={`/photos/attendance/${log.id}/out`}
                                     alt="Foto Salida"
                                     className="w-10 h-10 object-cover rounded-md"
                                   />
-                                  <div className="absolute inset-0 bg-slate-900/30 group-hover:bg-slate-900/10 rounded-md flex items-center justify-center transition">
-                                    <Camera className="w-3.5 h-3.5 text-white drop-shadow" />
-                                  </div>
                                 </button>
                               ) : (
-                                <span className="text-[10px] text-slate-400 italic">
+                                <span className="text-xs text-slate-400 italic">
                                   {log.estado === 'activo' ? 'En turno' : 'Sin foto'}
                                 </span>
                               )}
@@ -1347,21 +1245,21 @@ export const AdminPage: React.FC = () => {
                               {log.similitud_facial !== null && log.similitud_facial !== undefined ? (
                                 <div className="inline-flex flex-col items-center">
                                   <span
-                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center space-x-1 ${
-                                      log.verificacion_facial_exitosa
-                                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                        : 'bg-rose-100 text-rose-800 border border-rose-300'
-                                    }`}
+                                    className={`px-2 py-0.5 rounded-full text-xs font-bold flex items-center space-x-1 ${
+ log.verificacion_facial_exitosa
+ ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+ : 'bg-rose-100 text-rose-800 border border-rose-300'
+ }`}
                                   >
                                     <ScanFace className="w-3 h-3" />
                                     <span>{Math.round(log.similitud_facial)}%</span>
                                   </span>
-                                  <span className="text-[9px] text-slate-400 mt-0.5">
+                                  <span className="text-xs text-slate-400 mt-0.5">
                                     {log.verificacion_facial_exitosa ? 'Verificado' : 'Alerta'}
                                   </span>
                                 </div>
                               ) : (
-                                <span className="text-[10px] text-slate-400 italic">No requerida</span>
+                                <span className="text-xs text-slate-400 italic">No requerida</span>
                               )}
                             </td>
                             <td className="px-4 py-3 text-right font-mono font-bold text-slate-900">
@@ -1369,11 +1267,11 @@ export const AdminPage: React.FC = () => {
                             </td>
                             <td className="px-4 py-3 text-center">
                               <span
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                  log.estado === 'activo'
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : 'bg-slate-100 text-slate-600'
-                                }`}
+                                className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+ log.estado === 'activo'
+ ? 'bg-emerald-100 text-emerald-800'
+ : 'bg-slate-100 text-slate-600'
+ }`}
                               >
                                 {log.estado === 'activo' ? 'Activo' : 'Completado'}
                               </span>
@@ -1423,7 +1321,7 @@ export const AdminPage: React.FC = () => {
                       <ScanFace className="w-4 h-4 text-blue-600" />
                       Gestión de Personal & Biometría Facial 1:1
                     </h3>
-                    <p className="text-[11px] text-blue-800 mt-0.5">
+                    <p className="text-xs text-blue-800 mt-0.5">
                       Registra nuevos trabajadores, enrola o resetea su biometría. Los nuevos trabajadores se auto-enrolan en su primera marcación.
                     </p>
                   </div>
@@ -1468,34 +1366,39 @@ export const AdminPage: React.FC = () => {
                                   <AuthImage
                                     path={`/photos/user/${worker.id}/reference?v=${worker.foto_ref_bytes}`}
                                     alt={worker.nombre}
-                                    className="w-12 h-12 rounded-xl object-cover border-2 border-emerald-500 shadow-sm flex-shrink-0"
+                                    className="h-12 w-12 flex-shrink-0 border border-slate-300 object-cover"
+                                    fallback={
+                                      <div className="grid h-12 w-12 flex-shrink-0 place-items-center border border-slate-300 bg-slate-100 text-sm font-semibold text-slate-600">
+                                        {worker.nombre.slice(0, 2).toUpperCase()}
+                                      </div>
+                                    }
                                   />
                                 ) : (
-                                  <div className="w-12 h-12 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-500 font-bold text-sm flex-shrink-0">
+                                  <div className="grid h-12 w-12 flex-shrink-0 place-items-center border border-slate-300 bg-slate-100 text-sm font-semibold text-slate-600">
                                     {worker.nombre.slice(0, 2).toUpperCase()}
                                   </div>
                                 )}
                                 <div>
                                   <h4 className="font-bold text-xs text-slate-900 leading-tight">{worker.nombre}</h4>
-                                  <p className="text-[11px] text-slate-500">{worker.cargo}</p>
-                                  <span className="inline-block mt-0.5 text-[10px] font-mono font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
+                                  <p className="text-xs text-slate-500">{worker.cargo}</p>
+                                  <span className="inline-block mt-0.5 text-xs font-mono font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
                                     {worker.codigo_empleado}
                                   </span>
                                 </div>
                               </div>
 
                               <span
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex-shrink-0 ${
-                                  isEnrolled
-                                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                                    : 'bg-amber-100 text-amber-800 border border-amber-200'
-                                }`}
+                                className={`px-2 py-0.5 rounded-full text-xs font-bold flex-shrink-0 ${
+ isEnrolled
+ ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+ : 'bg-amber-100 text-amber-800 border border-amber-200'
+ }`}
                               >
-                                {isEnrolled ? '✓ Enrolado' : 'Pendiente'}
+                                {isEnrolled ? 'Enrolado' : 'Pendiente'}
                               </span>
                             </div>
 
-                            <div className="mt-3 text-[11px] text-slate-600 bg-slate-50 p-2.5 rounded-xl border border-slate-100 space-y-1">
+                            <div className="mt-3 text-xs text-slate-600 bg-slate-50 p-2.5 rounded-xl border border-slate-100 space-y-1">
                               <div className="flex justify-between">
                                 <span className="text-slate-400">Rol Sistema:</span>
                                 <span className="font-semibold text-slate-700 capitalize">{worker.rol}</span>
@@ -1503,7 +1406,7 @@ export const AdminPage: React.FC = () => {
                               <div className="flex justify-between">
                                 <span className="text-slate-400">Vector Facial:</span>
                                 <span className="font-mono text-slate-700">
-                                  {isEnrolled ? '128 dimensiones ✓' : 'Auto-enrolable en 1er login'}
+                                  {isEnrolled ? '128 dimensiones ' : 'Auto-enrolable en 1er login'}
                                 </span>
                               </div>
                             </div>
@@ -1514,12 +1417,12 @@ export const AdminPage: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => handleResetFace(worker.id, worker.nombre)}
-                                className="text-[11px] text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer"
+                                className="text-xs text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer"
                               >
                                 Resetear Rostro
                               </button>
                             ) : (
-                              <span className="text-[10px] text-slate-400">Sin biometría</span>
+                              <span className="text-xs text-slate-400">Sin biometría</span>
                             )}
 
                             <button
@@ -1554,12 +1457,12 @@ export const AdminPage: React.FC = () => {
                       <h3 className="text-xs font-bold text-rose-950">
                         Auditoría de Intentos de Fraude y Suplantación Biométrica
                       </h3>
-                      <p className="text-[11px] text-rose-700 mt-0.5">
+                      <p className="text-xs text-rose-700 mt-0.5">
                         Registros en vivo cuando un intento de marcación no supera el umbral de coincidencia facial (&lt; 60%) o falla la prueba de vida (parpadeo EAR).
                       </p>
                     </div>
                   </div>
-                  <span className="px-3 py-1 bg-rose-600 text-white font-black text-xs rounded-xl shadow-sm">
+                  <span className="px-3 py-1 bg-rose-600 text-white font-bold text-xs rounded-xl shadow-sm">
                     {fraudLogs.length} Alerta{fraudLogs.length === 1 ? '' : 's'}
                   </span>
                 </div>
@@ -1578,7 +1481,7 @@ export const AdminPage: React.FC = () => {
                   <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                     <div className="overflow-x-auto">
                       <table className="w-full text-left text-xs text-slate-600">
-                        <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase font-semibold text-[10px] tracking-wider">
+                        <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase font-semibold text-xs tracking-wider">
                           <tr>
                             <th className="px-4 py-3">Fecha y Hora</th>
                             <th className="px-4 py-3">Trabajador Afectado</th>
@@ -1600,20 +1503,20 @@ export const AdminPage: React.FC = () => {
                               </td>
                               <td className="px-4 py-3">
                                 <div className="font-bold text-slate-900">{log.nombre_usuario || `Usuario #${log.usuario_id}`}</div>
-                                <span className="text-[10px] font-mono text-slate-500">{log.codigo_empleado}</span>
+                                <span className="text-xs font-mono text-slate-500">{log.codigo_empleado}</span>
                               </td>
                               <td className="px-4 py-3">
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
-                                  {log.tipo_evento}
+                                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                                  {etiquetaEvento(log.tipo_evento)}
                                 </span>
                               </td>
                               <td className="px-4 py-3 text-center">
-                                <span className="font-extrabold text-xs text-rose-600 font-mono">
+                                <span className="font-bold text-xs text-rose-600 font-mono">
                                   {log.similitud_obtenida !== null && log.similitud_obtenida !== undefined
                                     ? `${Math.round(log.similitud_obtenida)}%`
                                     : '0%'}
                                 </span>
-                                <p className="text-[9px] text-slate-400">Mínimo: 60%</p>
+                                <p className="text-xs text-slate-400">Mínimo: 60%</p>
                               </td>
                               <td className="px-4 py-3 text-center">
                                 {log.tiene_foto_intento ? (
@@ -1628,22 +1531,19 @@ export const AdminPage: React.FC = () => {
                                         similarity: log.similitud_obtenida,
                                       })
                                     }
-                                    className="group relative inline-flex items-center justify-center p-0.5 rounded-lg border-2 border-rose-500 hover:border-rose-600 bg-rose-50 transition transform hover:scale-105 cursor-pointer shadow-sm"
+                                    className="inline-flex border border-slate-300 bg-white p-0.5 transition-colors hover:border-brand-600"
                                   >
                                     <AuthImage
                                       path={`/photos/fraud/${log.id}`}
                                       alt="Intento Fraudulento"
                                       className="w-10 h-10 object-cover rounded-md"
                                     />
-                                    <div className="absolute inset-0 bg-slate-900/30 group-hover:bg-slate-900/10 rounded-md flex items-center justify-center transition">
-                                      <Camera className="w-3.5 h-3.5 text-white drop-shadow" />
-                                    </div>
                                   </button>
                                 ) : (
-                                  <span className="text-[10px] text-slate-400 italic">Sin foto</span>
+                                  <span className="text-xs text-slate-400 italic">Sin foto</span>
                                 )}
                               </td>
-                              <td className="px-4 py-3 font-mono text-[11px] text-slate-600">
+                              <td className="px-4 py-3 font-mono text-xs text-slate-600">
                                 {log.latitud && log.longitud ? (
                                   <a
                                     href={`https://www.google.com/maps?q=${log.latitud},${log.longitud}`}
@@ -1702,7 +1602,7 @@ export const AdminPage: React.FC = () => {
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-400">Coordenadas:</span>
-                        <span className="font-mono text-[11px] text-slate-700">
+                        <span className="font-mono text-xs text-slate-700">
                           {st.latitud.toFixed(4)}, {st.longitud.toFixed(4)}
                         </span>
                       </div>
@@ -1717,7 +1617,7 @@ export const AdminPage: React.FC = () => {
 
       {/* Modal: Nueva Estación */}
       {showNewStationModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
             <h3 className="font-bold text-lg text-slate-900 mb-4">Nueva Estación de Trabajo (Geocerca)</h3>
             <form onSubmit={handleCreateStation} className="space-y-3 text-xs">
@@ -1728,7 +1628,7 @@ export const AdminPage: React.FC = () => {
                     <Link className="w-3.5 h-3.5 mr-1 text-blue-600" />
                     <span>Pegar Link de Google Maps:</span>
                   </label>
-                  <span className="text-[10px] text-blue-600 font-semibold bg-blue-100/70 px-1.5 py-0.5 rounded">
+                  <span className="text-xs text-blue-600 font-semibold bg-blue-100/70 px-1.5 py-0.5 rounded">
                     Auto-detección
                   </span>
                 </div>
@@ -1750,7 +1650,7 @@ export const AdminPage: React.FC = () => {
                     type="button"
                     onClick={() => handleExtractFromMapsUrl()}
                     disabled={isParsingUrl}
-                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs flex items-center space-x-1 transition disabled:opacity-60 cursor-pointer shadow-sm flex-shrink-0"
+                    className="btn-primary btn-sm flex-shrink-0"
                   >
                     {isParsingUrl ? (
                       <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -1764,84 +1664,84 @@ export const AdminPage: React.FC = () => {
                 </div>
                 {parseStatus && (
                   <p
-                    className={`text-[11px] font-semibold flex items-center gap-1 ${
-                      parseStatus.type === 'success' ? 'text-emerald-700' : 'text-rose-600'
-                    }`}
+                    className={`text-xs font-semibold flex items-center gap-1 ${
+ parseStatus.type === 'success' ? 'text-emerald-700' : 'text-rose-600'
+ }`}
                   >
-                    {parseStatus.type === 'success' ? '✓' : '⚠️'} {parseStatus.message}
+                    {parseStatus.type === 'success' ? '' : ''} {parseStatus.message}
                   </p>
                 )}
-                <p className="text-[10px] text-slate-500">
-                  💡 Copia el enlace desde Google Maps en tu móvil o PC para autocompletar las coordenadas.
+                <p className="text-xs text-slate-500">
+                  Copie el enlace desde Google Maps para autocompletar las coordenadas.
                 </p>
               </div>
 
               <div>
-                <label className="block font-bold text-slate-600 mb-1">Código (ej. EST-05):</label>
+                <label className="field-label">Código (ej. EST-05):</label>
                 <input
                   type="text"
                   required
                   value={newCode}
                   onChange={(e) => setNewCode(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-medium focus:ring-2 focus:ring-blue-500"
+                  className="field"
                 />
               </div>
 
               <div>
-                <label className="block font-bold text-slate-600 mb-1">Nombre de Estación:</label>
+                <label className="field-label">Nombre de Estación:</label>
                 <input
                   type="text"
                   required
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   placeholder="ej. Patio de Maniobras Norte"
-                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-medium focus:ring-2 focus:ring-blue-500"
+                  className="field"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-600 mb-1">Latitud:</label>
+                  <label className="field-label">Latitud:</label>
                   <input
                     type="number"
                     step="any"
                     required
                     value={newLat}
                     onChange={(e) => setNewLat(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-medium font-mono"
+                    className="field font-mono"
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-600 mb-1">Longitud:</label>
+                  <label className="field-label">Longitud:</label>
                   <input
                     type="number"
                     step="any"
                     required
                     value={newLng}
                     onChange={(e) => setNewLng(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-medium font-mono"
+                    className="field font-mono"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-600 mb-1">Radio (metros):</label>
+                  <label className="field-label">Radio (metros):</label>
                   <input
                     type="number"
                     required
                     value={newRadius}
                     onChange={(e) => setNewRadius(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-medium"
+                    className="field"
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-600 mb-1">Color Identificador:</label>
+                  <label className="field-label">Color Identificador:</label>
                   <input
                     type="color"
                     value={newColor}
                     onChange={(e) => setNewColor(e.target.value)}
-                    className="w-full h-10 p-1 bg-slate-50 border border-slate-300 rounded-xl cursor-pointer"
+                    className="field"
                   />
                 </div>
               </div>
@@ -1850,14 +1750,14 @@ export const AdminPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowNewStationModal(false)}
-                  className="px-4 py-2 font-bold text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer"
+                  className="btn-secondary"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={isSavingStation}
-                  className="px-5 py-2 font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md transition disabled:opacity-60 cursor-pointer"
+                  className="btn-primary"
                 >
                   {isSavingStation ? 'Guardando en BD...' : 'Guardar Estación'}
                 </button>
@@ -1870,12 +1770,12 @@ export const AdminPage: React.FC = () => {
       {/* Modal: Vista Previa de Evidencia Fotográfica y Comparación Biométrica */}
       {/* Ventana: enviar alerta al celular de un trabajador */}
       {alertTarget && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-slate-950/70 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-4 border-b border-slate-100 flex items-center justify-between">
               <div>
-                <h3 className="font-extrabold text-sm text-slate-900">🔔 Enviar alerta al celular</h3>
-                <p className="text-[11px] text-slate-500">
+                <h3 className="font-bold text-sm text-slate-900">Enviar alerta al celular</h3>
+                <p className="text-xs text-slate-500">
                   {alertTarget.nombre_usuario} · {alertTarget.codigo_empleado}
                   {alertTarget.dentro_de_estacion ? '' : ' · Fuera de zona'}
                 </p>
@@ -1896,11 +1796,11 @@ export const AdminPage: React.FC = () => {
                     key={p}
                     type="button"
                     onClick={() => setAlertMsg(p)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border text-left transition ${
-                      alertMsg === p
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-slate-50 text-slate-600 border-slate-300 hover:bg-slate-100'
-                    }`}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold border text-left transition ${
+ alertMsg === p
+ ? 'bg-blue-600 text-white border-blue-600'
+ : 'bg-slate-50 text-slate-600 border-slate-300 hover:bg-slate-100'
+ }`}
                   >
                     {p}
                   </button>
@@ -1908,19 +1808,19 @@ export const AdminPage: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">Mensaje:</label>
+                <label className="field-label">Mensaje:</label>
                 <textarea
                   value={alertMsg}
                   onChange={(e) => setAlertMsg(e.target.value.slice(0, 200))}
                   rows={3}
-                  placeholder="Escribe el aviso para el trabajador…"
-                  className="w-full p-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none resize-none"
+                  placeholder="Escriba el aviso para el trabajador…"
+                  className="field"
                 />
-                <p className="text-[10px] text-slate-400 text-right">{alertMsg.length}/200</p>
+                <p className="text-xs text-slate-400 text-right">{alertMsg.length}/200</p>
               </div>
 
               {alertTarget.push_activo === 0 || alertTarget.push_activo === false ? (
-                <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
                   Este trabajador todavía no activó las alertas en su celular: solo verá el mensaje si abre la app.
                 </p>
               ) : null}
@@ -1929,7 +1829,7 @@ export const AdminPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setAlertTarget(null)}
-                  className="py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition"
+                  className="btn-secondary"
                 >
                   Cancelar
                 </button>
@@ -1937,7 +1837,7 @@ export const AdminPage: React.FC = () => {
                   type="button"
                   onClick={handleSendAlert}
                   disabled={alertSending || !alertMsg.trim()}
-                  className="py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow transition"
+                  className="btn-primary"
                 >
                   {alertSending ? 'Enviando…' : 'Enviar alerta'}
                 </button>
@@ -1948,117 +1848,92 @@ export const AdminPage: React.FC = () => {
       )}
 
       {photoPreview && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-2xl w-full overflow-hidden shadow-2xl">
-            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
-              <div className="flex items-center space-x-2.5">
-                <div
-                  className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                    photoPreview.type === 'entrada'
-                      ? 'bg-emerald-500/20 text-emerald-400'
-                      : 'bg-rose-500/20 text-rose-400'
-                  }`}
-                >
-                  <Camera className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-extrabold text-sm text-white">
-                    {photoPreview.referencePhotoUrl
-                      ? 'Comparación Biométrica 1:1'
-                      : `Evidencia de ${photoPreview.type === 'entrada' ? 'Entrada (Check-In)' : 'Salida (Check-Out)'}`}
-                  </h3>
-                  <p className="text-[11px] text-slate-400">{photoPreview.workerName}</p>
-                </div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4">
+          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto border border-slate-300 bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">
+                  {photoPreview.referencePhotoUrl
+                    ? 'Comparación biométrica'
+                    : `Evidencia de ${photoPreview.type === 'entrada' ? 'entrada' : 'salida'}`}
+                </h3>
+                <p className="text-sm text-slate-600">{photoPreview.workerName}</p>
               </div>
               <button
                 onClick={() => setPhotoPreview(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                aria-label="Cerrar"
+                className="p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
               >
-                <X className="w-5 h-5" />
+                <X className="h-5 w-5" />
               </button>
             </div>
 
             {/* Comparación lado a lado si existe foto de referencia */}
             {photoPreview.referencePhotoUrl ? (
-              <div className="p-5 bg-black/40 space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {/* Foto Oficial Enrolada */}
-                  <div className="bg-slate-800/60 border border-slate-700 rounded-2xl p-3 flex flex-col items-center">
-                    <div className="flex items-center space-x-1.5 mb-2 text-blue-400 text-xs font-bold">
-                      <UserCheck className="w-3.5 h-3.5" />
-                      <span>Rostro Oficial Enrolado</span>
-                    </div>
+              <div className="space-y-4 bg-slate-50 p-5">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <figure className="flex flex-col items-center border border-slate-300 bg-white p-3">
+                    <figcaption className="mb-2 text-sm font-medium text-slate-700">Rostro registrado</figcaption>
                     <AuthImage
                       eager
                       path={photoPreview.referencePhotoUrl}
-                      alt="Rostro Enrolado"
-                      className="max-h-56 w-auto max-w-full rounded-xl border border-slate-600 object-contain shadow-md"
+                      alt="Rostro registrado"
+                      className="max-h-56 w-auto max-w-full border border-slate-200 object-contain"
                     />
-                    <span className="text-[10px] text-slate-400 mt-2 font-mono">Patrón Biométrico Maestro</span>
-                  </div>
+                    <span className="mt-2 text-xs text-slate-500">Patrón biométrico de referencia</span>
+                  </figure>
 
-                  {/* Foto Capturada en Marcación */}
-                  <div className="bg-slate-800/60 border border-slate-700 rounded-2xl p-3 flex flex-col items-center">
-                    <div className="flex items-center space-x-1.5 mb-2 text-emerald-400 text-xs font-bold">
-                      <ScanFace className="w-3.5 h-3.5" />
-                      <span>Foto en Marcación</span>
-                    </div>
+                  <figure className="flex flex-col items-center border border-slate-300 bg-white p-3">
+                    <figcaption className="mb-2 text-sm font-medium text-slate-700">Foto de la marcación</figcaption>
                     <AuthImage
                       eager
                       path={photoPreview.url}
-                      alt="Foto en Marcación"
-                      className="max-h-56 w-auto max-w-full rounded-xl border border-slate-600 object-contain shadow-md"
+                      alt="Foto de la marcación"
+                      className="max-h-56 w-auto max-w-full border border-slate-200 object-contain"
                     />
-                    <span className="text-[10px] text-slate-400 mt-2 font-mono">Captura en Vivo + Liveness</span>
-                  </div>
+                    <span className="mt-2 text-xs text-slate-500">Captura en vivo con prueba de vida</span>
+                  </figure>
                 </div>
 
-                {/* Barra de Similitud Biométrica */}
+                {/* Coincidencia biométrica */}
                 {photoPreview.similarity !== null && photoPreview.similarity !== undefined && (
-                  <div className="bg-slate-800 p-3 rounded-2xl border border-slate-700 flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <div
-                        className={`w-3 h-3 rounded-full ${
-                          photoPreview.similarity >= 60 ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'
-                        }`}
-                      />
-                      <span className="text-xs font-bold text-white">Coincidencia Biométrica:</span>
-                    </div>
+                  <div className="flex items-center justify-between border border-slate-300 bg-white px-4 py-3">
+                    <span className="text-sm font-medium text-slate-700">Coincidencia biométrica</span>
                     <span
-                      className={`text-xs font-black font-mono px-3 py-1 rounded-xl ${
+                      className={`tag tabular-nums ${
                         photoPreview.similarity >= 60
-                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                          : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                          ? 'border-green-200 bg-green-50 text-green-800'
+                          : 'border-red-200 bg-red-50 text-red-800'
                       }`}
                     >
-                      {Math.round(photoPreview.similarity)}% {photoPreview.similarity >= 60 ? '✓ Verificado' : '⚠️ No Coincide'}
+                      {Math.round(photoPreview.similarity)}% · {photoPreview.similarity >= 60 ? 'Verificado' : 'No coincide'}
                     </span>
                   </div>
                 )}
               </div>
             ) : (
-              <div className="p-4 flex flex-col items-center justify-center bg-black/50">
-                <AuthImage eager path={photoPreview.url} alt={`Evidencia ${photoPreview.type}`}
-                  className="max-h-[60vh] w-auto max-w-full rounded-2xl border border-slate-700 shadow-xl object-contain"
+              <div className="flex flex-col items-center justify-center bg-slate-50 p-4">
+                <AuthImage
+                  eager
+                  path={photoPreview.url}
+                  alt={`Evidencia ${photoPreview.type}`}
+                  className="max-h-[60vh] w-auto max-w-full border border-slate-300 object-contain"
                 />
               </div>
             )}
 
-            <div className="p-4 bg-slate-950/80 border-t border-slate-800 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div className="space-y-0.5 text-slate-300">
+            <div className="flex flex-col items-start justify-between gap-3 border-t border-slate-200 px-5 py-4 text-sm sm:flex-row sm:items-center">
+              <div className="space-y-0.5 text-slate-700">
                 <p>
-                  <span className="text-slate-500 font-semibold">Fecha y Hora: </span>
+                  <span className="text-slate-500">Fecha y hora: </span>
                   {photoPreview.date
-                    ? new Date(photoPreview.date).toLocaleString([], {
-                        dateStyle: 'full',
-                        timeStyle: 'medium',
-                      })
+                    ? new Date(photoPreview.date).toLocaleString([], { dateStyle: 'full', timeStyle: 'medium' })
                     : 'No registrada'}
                 </p>
                 {photoPreview.stationName && (
                   <p>
-                    <span className="text-slate-500 font-semibold">Estación Detectada: </span>
-                    <span className="text-blue-400 font-medium">📍 {photoPreview.stationName}</span>
+                    <span className="text-slate-500">Estación detectada: </span>
+                    {photoPreview.stationName}
                   </p>
                 )}
               </div>
@@ -2078,10 +1953,10 @@ export const AdminPage: React.FC = () => {
                     alert('No se pudo descargar la foto.');
                   }
                 }}
-                className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold flex items-center space-x-1.5 transition text-[11px] self-end sm:self-auto cursor-pointer shadow-md"
+                className="btn-primary btn-sm"
               >
-                <Download className="w-3.5 h-3.5" />
-                <span>Descargar Foto</span>
+                <Download className="h-3.5 w-3.5" />
+                Descargar foto
               </button>
             </div>
           </div>
@@ -2090,7 +1965,7 @@ export const AdminPage: React.FC = () => {
 
       {/* Modal: Nuevo Trabajador */}
       {showNewWorkerModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center space-x-2.5">
@@ -2098,8 +1973,8 @@ export const AdminPage: React.FC = () => {
                   <UserCheck className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-base text-slate-900">Registrar Nuevo Trabajador</h3>
-                  <p className="text-[11px] text-slate-500">Alta de personal y credenciales de marcación</p>
+                  <h3 className="font-bold text-base text-slate-900">Registrar Nuevo Trabajador</h3>
+                  <p className="text-xs text-slate-500">Alta de personal y credenciales de marcación</p>
                 </div>
               </div>
               <button
@@ -2114,18 +1989,18 @@ export const AdminPage: React.FC = () => {
             <form onSubmit={handleCreateWorker} className="space-y-3.5 text-xs">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-600 mb-1">Código Empleado:</label>
+                  <label className="field-label">Código Empleado:</label>
                   <input
                     type="text"
                     required
                     value={newWorkerCode}
                     onChange={(e) => setNewWorkerCode(e.target.value)}
                     placeholder="ej. EMP-105"
-                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold text-slate-800 focus:ring-2 focus:ring-blue-500"
+                    className="field font-mono"
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-600 mb-1">PIN de Acceso (opcional):</label>
+                  <label className="field-label">PIN de Acceso (opcional):</label>
                   <input
                     type="text"
                     inputMode="numeric"
@@ -2134,49 +2009,49 @@ export const AdminPage: React.FC = () => {
                     value={newWorkerPin}
                     onChange={(e) => setNewWorkerPin(e.target.value.replace(/\D/g, ''))}
                     placeholder="4-6 dígitos (vacío = generar)"
-                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-mono text-center font-bold text-slate-800 focus:ring-2 focus:ring-blue-500"
+                    className="field font-mono text-center"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block font-bold text-slate-600 mb-1">Nombre Completo:</label>
+                <label className="field-label">Nombre Completo:</label>
                 <input
                   type="text"
                   required
                   value={newWorkerName}
                   onChange={(e) => setNewWorkerName(e.target.value)}
                   placeholder="ej. Juan Carlos Pérez Rojas"
-                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-medium text-slate-800 focus:ring-2 focus:ring-blue-500"
+                  className="field"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-600 mb-1">Cargo / Puesto:</label>
+                  <label className="field-label">Cargo / Puesto:</label>
                   <input
                     type="text"
                     value={newWorkerCargo}
                     onChange={(e) => setNewWorkerCargo(e.target.value)}
                     placeholder="ej. Operador de Campo"
-                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-800 focus:ring-2 focus:ring-blue-500"
+                    className="field"
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-600 mb-1">Teléfono:</label>
+                  <label className="field-label">Teléfono:</label>
                   <input
                     type="tel"
                     value={newWorkerPhone}
                     onChange={(e) => setNewWorkerPhone(e.target.value)}
                     placeholder="ej. 987654321"
-                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-800 focus:ring-2 focus:ring-blue-500"
+                    className="field"
                   />
                 </div>
               </div>
 
-              <div className="bg-blue-50/70 border border-blue-200 p-3 rounded-2xl text-[11px] text-blue-900 space-y-1">
+              <div className="bg-blue-50/70 border border-blue-200 p-3 rounded-2xl text-xs text-blue-900 space-y-1">
                 <p className="font-bold flex items-center gap-1">
-                  <span>📸</span> Enrolamiento Biométrico Facial:
+                  <span></span> Enrolamiento Biométrico Facial:
                 </p>
                 <p className="text-blue-700">
                   El trabajador podrá <strong>auto-enrolar su rostro en su primera marcación</strong> desde el celular o puedes enrolarlo inmediatamente después de crearlo con el botón "Enrolar Ahora".
@@ -2187,14 +2062,14 @@ export const AdminPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowNewWorkerModal(false)}
-                  className="px-4 py-2 font-bold text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer"
+                  className="btn-secondary"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={isSavingWorker}
-                  className="px-5 py-2 font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md transition disabled:opacity-60 cursor-pointer"
+                  className="btn-primary"
                 >
                   {isSavingWorker ? 'Guardando en BD...' : 'Crear Trabajador'}
                 </button>
@@ -2222,8 +2097,8 @@ export const AdminPage: React.FC = () => {
       )}
 
       {/* Footer */}
-      <footer className="bg-white border-t border-slate-200 py-3 text-center text-[11px] text-slate-400 font-medium">
-        SMI Geocercas & Asistencia • Consola Administrativa • SQL Server [GPS_SMI]
+      <footer className="bg-white border-t border-slate-200 py-3 text-center text-xs text-slate-400 font-medium">
+        © {new Date().getFullYear()} SMI · Panel de control de asistencia
       </footer>
     </div>
   );

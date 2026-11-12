@@ -29,7 +29,7 @@ const MapFlyTo: React.FC<{ selectedWorker?: DatosTrabajadorEnVivo | null }> = ({
 // Icono personalizado con iniciales y estado
 function createWorkerIcon(worker: DatosTrabajadorEnVivo) {
   const isInside = worker.dentro_de_estacion;
-  const borderColor = isInside ? '#10B981' : '#F59E0B';
+  const borderColor = isInside ? '#1f7a4d' : '#b45f06';
 
   const initials = worker.nombre_usuario
     .split(' ')
@@ -38,23 +38,18 @@ function createWorkerIcon(worker: DatosTrabajadorEnVivo) {
     .join('')
     .toUpperCase();
 
+  // Insignia cuadrada con iniciales: azul de la marca y borde del color del estado
   const html = `
-    <div class="relative flex items-center justify-center">
-      <div class="absolute w-10 h-10 rounded-full bg-blue-500/20 animate-ping"></div>
-      <div class="w-8 h-8 rounded-full bg-slate-900 border-2 shadow-lg flex items-center justify-center font-bold text-[11px] text-white select-none transition-transform hover:scale-110" style="border-color: ${borderColor};">
-        ${initials}
-      </div>
-      <div class="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white flex items-center justify-center text-[8px] text-white font-bold" style="background-color: ${borderColor};">
-        ${isInside ? '✓' : '!'}
-      </div>
+    <div style="width:34px;height:34px;background:#1c42ba;border:3px solid ${borderColor};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px;font-family:Archivo,sans-serif;box-shadow:0 1px 3px rgba(15,23,42,.35);">
+      ${initials}
     </div>
   `;
 
   return L.divIcon({
     html,
     className: 'custom-worker-marker',
-    iconSize: [36, 36],
-    iconAnchor: [18, 18],
+    iconSize: [34, 34],
+    iconAnchor: [17, 17],
     popupAnchor: [0, -20],
   });
 }
@@ -127,10 +122,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
               position={[estacion.latitud, estacion.longitud]}
               icon={L.divIcon({
                 html: `
-                  <div class="inline-flex items-center space-x-1.5 bg-white border-2 px-3 py-1 rounded-full shadow-lg whitespace-nowrap text-xs font-black text-slate-900 -translate-x-1/2 -translate-y-full" style="border-color: ${estacion.color};">
-                    <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background-color: ${estacion.color}"></span>
-                    <span>${estacion.codigo} • ${estacion.nombre}</span>
-                  </div>
+                  <div style="display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #cbd5e1;border-left:4px solid ${estacion.color};padding:3px 8px;white-space:nowrap;font-size:12px;font-weight:600;color:#0f172a;font-family:Archivo,sans-serif;transform:translate(-50%,-100%);box-shadow:0 1px 2px rgba(15,23,42,.12);">${estacion.codigo} · ${estacion.nombre}</div>
                 `,
                 className: 'station-badge-pill',
                 iconSize: [0, 0],
@@ -162,7 +154,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                       </h4>
                       <p className="text-xs text-slate-500 font-medium">{trabajador.cargo}</p>
                     </div>
-                    <span className="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-bold">
+                    <span className="text-xs bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-bold">
                       {trabajador.codigo_empleado}
                     </span>
                   </div>
@@ -211,7 +203,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
                     {trabajador.tiene_foto_ingreso && trabajador.asistencia_id && (
                       <div className="mt-2 pt-2 border-t border-slate-100 text-center">
-                        <span className="text-[10px] font-bold text-slate-500 block mb-1">📸 Evidencia de Ingreso</span>
+                        <span className="text-xs font-bold text-slate-500 block mb-1">Evidencia de Ingreso</span>
                         <AuthImage
                           path={`/photos/attendance/${trabajador.asistencia_id}/in`}
                           alt="Evidencia Ingreso"
@@ -229,19 +221,19 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       </MapContainer>
 
       {/* Leyenda */}
-      <div className="absolute bottom-4 right-4 z-[400] bg-white/95 backdrop-blur-sm p-3 rounded-xl shadow-lg border border-slate-200/80 text-xs text-slate-700 space-y-1.5">
-        <p className="font-bold text-[11px] text-slate-400 uppercase tracking-wider mb-1">Leyenda en Vivo</p>
+      <div className="absolute bottom-4 right-4 z-[400] space-y-1.5 border border-slate-300 bg-white p-3 text-sm text-slate-700 shadow-md">
+        <p className="mb-1 text-sm font-semibold text-slate-900">Leyenda</p>
         <div className="flex items-center space-x-2">
-          <span className="w-3 h-3 rounded-full bg-emerald-500 border border-white shadow-sm inline-block"></span>
-          <span>Trabajador en Estación</span>
+          <span className="inline-block h-3 w-3 bg-green-700"></span>
+          <span>Trabajador en su estación</span>
         </div>
         <div className="flex items-center space-x-2">
-          <span className="w-3 h-3 rounded-full bg-amber-500 border border-white shadow-sm inline-block"></span>
-          <span>Trabajador fuera de Estación</span>
+          <span className="inline-block h-3 w-3 bg-amber-600"></span>
+          <span>Trabajador fuera de zona</span>
         </div>
         <div className="flex items-center space-x-2">
-          <span className="w-3 h-3 rounded-full border-2 border-dashed border-blue-500 inline-block"></span>
-          <span>Radio de Estación (Geocerca)</span>
+          <span className="inline-block h-3 w-3 border-2 border-dashed border-brand-600"></span>
+          <span>Radio de la estación (geocerca)</span>
         </div>
       </div>
     </div>
