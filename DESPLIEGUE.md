@@ -21,6 +21,8 @@ Copia `service/.env.example` a `service/.env` y completa los valores. **Nunca su
 | `FACE_MATCH_THRESHOLD` | Umbral de coincidencia facial (0.58 por defecto; más bajo = más estricto) |
 | `ALLOW_SELF_ENROL=false` | Opcional: obliga a que solo un administrador enrole rostros |
 | `LOGIN_IP_MAX` | Intentos de login **fallidos** permitidos por IP cada 10 min (60 por defecto). Toda una planta suele compartir IP, así que debe ser alto; cada cuenta se protege aparte (8 fallos / 15 min) |
+| `RETENCION_UBICACIONES_DIAS` | Opcional. Días que se conservan los **puntos GPS del recorrido** (mínimo 7). Vacío = no borrar nunca. No afecta a la asistencia ni a las fotos |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Claves de las **notificaciones push** (alertas al celular). Se generan con `npm run vapid`. La privada es un secreto; usa una pareja distinta en producción |
 
 Generar un `JWT_SECRET`:
 ```bash
@@ -37,6 +39,11 @@ Prueba primero sin cambiar nada: `node service/migrate-security.mjs --dry-run`.
 Impide que un trabajador tenga dos turnos activos a la vez (doble toque, dos dispositivos):
 ```bash
 npm run migrate-turnos        # primero revisa si hay duplicados; con --dry-run solo simula
+```
+
+Índices para que el historial y la retención sigan rápidos con muchos registros:
+```bash
+npm run migrate-historial     # con --dry-run solo muestra qué haría
 ```
 
 Después **cambia todos los PIN por defecto** (el script anterior te lista quiénes los tienen):
@@ -61,8 +68,40 @@ Opciones de compilación del frontend (`client/.env`, se leen al hacer `build`):
 - Las listas del panel **no incluyen fotos**: se piden una por una al verlas (`/api/photos/...`, solo para administradores).
 - El panel pide el estado en vivo cada 3 s (liviano) y los listados completos cada 30 s o, tras un grupo de marcas, en **una sola** recarga.
 - El login no congela el servidor: el hash del PIN se calcula en hilos aparte.
+- **Puntos GPS:** el celular envía uno cada 15 s (o antes, mínimo 5 s, si el trabajador se movió más de 25 m), y el servidor descarta los casi idénticos (menos de 5 s y 10 m). Sin esto el GPS puede avisar cada segundo (~30 GB/año con 30 trabajadores).
+- **Historial del panel:** filtro por fechas (últimos 7 días por defecto), búsqueda en el servidor y paginación de 50 en 50; **Exportar CSV** descarga todo el rango filtrado.
+- **Retención de puntos GPS (opcional):** `npm run purge-historial -- --days=90` solo **cuenta**; con `--apply` borra. O define `RETENCION_UBICACIONES_DIAS=90` y el servidor lo hace solo cada 24 h. Es irreversible: haz un respaldo antes.
 - Entrada y salida se guardan en una transacción: si algo falla, no queda nada a medias.
 - Si ves que PM2 reinicia el servidor por memoria, sube `max_memory_restart` en `ecosystem.config.cjs`.
+
+### Alertas al celular del trabajador (notificaciones push)
+El administrador/supervisor puede enviar una alerta a un trabajador en turno (botón **🔔 Enviar alerta** en *Personal en Turno*, destacado en ámbar si está fuera de zona). Le llega al celular como una notificación del sistema, **aunque tenga la pantalla apagada y la app cerrada**.
+
+Puesta en marcha (una vez):
+```bash
+npm run vapid                 # imprime 3 líneas VAPID_*: pégalas en service/.env y pon un correo real en VAPID_SUBJECT
+npm run migrate-push          # crea SuscripcionesPush y AlertasEnviadas (con --dry-run solo simula)
+pm2 restart smi-gps
+```
+En nginx, el archivo que importa el service worker tampoco debe quedar en caché (junto al bloque de `/sw.js`):
+```nginx
+    location = /push-sw.js {
+        add_header Cache-Control "no-cache";
+    }
+```
+
+Cómo funciona y qué esperar:
+- Cada trabajador debe **tocar "Activar alertas"** una vez en su celular y aceptar el permiso. En el panel se ve quién las tiene activadas (🔔) y quién no (🔕).
+- El mensaje viaja **cifrado** a Google/Apple/Mozilla y de ahí al celular. Cada alerta queda en la tabla `AlertasEnviadas` (quién la envió, a quién, cuándo y si fue leída).
+- Si el trabajador tiene la app abierta, ve además un aviso a pantalla completa con vibración. Al tocar la notificación o "Entendido" la alerta queda **leída** y el panel lo avisa en vivo.
+- **Android (Chrome):** funciona con la app instalada o en el navegador. **iPhone/iPad:** solo funciona si la app está **instalada en la pantalla de inicio** (iOS 16.4 o superior).
+- Al cerrar sesión, el celular deja de recibir las alertas de ese trabajador (así no llegan a otra persona si comparten teléfono).
+
+Límites que conviene saber:
+- Las notificaciones push web son *casi* tan fiables como las de WhatsApp, pero no iguales: el servidor confirma que **entregó** el mensaje al servicio de Google/Apple, no que el celular lo haya mostrado. La confirmación real es la lectura (cuando el trabajador la toca).
+- Algunos fabricantes de Android (Xiaomi, Huawei, Oppo…) y el "ahorro de batería" pueden retrasar o bloquear notificaciones de apps en segundo plano. Se arregla en Ajustes → Batería → permitir sin restricciones, o dejando la app instalada.
+- Si el trabajador desactiva las notificaciones o desinstala la app, el servidor lo detecta en el siguiente envío y elimina esa suscripción.
+- Para entrega garantizada tipo WhatsApp (alta prioridad nativa) haría falta una app nativa con Firebase; el proyecto ya incluye Capacitor por si se quiere dar ese paso.
 
 ## 5. Qué protege el sistema
 - Los PIN se guardan con hash (scrypt); el login se bloquea tras varios intentos fallidos.

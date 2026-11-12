@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import sql from 'mssql';
+import * as webpush from 'web-push';
 
 import { dbConfig, jwtSecret, config, isProduction } from './config.mjs';
 import {
@@ -107,6 +108,31 @@ async function checkPinColumn() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Notificaciones push (alertas al celular, incluso con la pantalla apagada)
+// ---------------------------------------------------------------------------
+const pushConfigurado = Boolean(config.vapidPublicKey && config.vapidPrivateKey);
+if (pushConfigurado) {
+  webpush.setVapidDetails(config.vapidSubject, config.vapidPublicKey, config.vapidPrivateKey);
+} else {
+  console.warn('⚠️ Notificaciones push desactivadas: faltan VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY (ejecuta: npm run vapid).');
+}
+
+// ¿Existen ya las tablas de push? (se crean con: npm run migrate-push)
+let pushTablasListas = false;
+async function checkPushTables() {
+  try {
+    const p = await getPool();
+    const r = await p.request().query("SELECT OBJECT_ID('SuscripcionesPush', 'U') AS a, OBJECT_ID('AlertasEnviadas', 'U') AS b");
+    pushTablasListas = Boolean(r.recordset[0].a && r.recordset[0].b);
+    if (pushConfigurado && !pushTablasListas) {
+      console.warn('⚠️ Faltan las tablas de notificaciones: ejecuta  npm run migrate-push');
+    }
+  } catch (err) {
+    console.warn('No se pudo comprobar las tablas de notificaciones:', err.message);
+  }
+}
+
 process.on('uncaughtException', (err) => {
   console.error('🚨 Excepción no capturada:', err);
 });
@@ -134,13 +160,22 @@ function calcularDistanciaMetros(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-async function detectarEstacionTrabajo(latitud, longitud) {
+// Las estaciones casi nunca cambian: se guardan 60 s en memoria para no consultarlas en cada punto GPS
+let estacionesCache = null; // { t, data }
+async function getEstacionesActivas() {
+  if (estacionesCache && Date.now() - estacionesCache.t < 60_000) return estacionesCache.data;
   const p = await getPool();
   const res = await p.request().query('SELECT * FROM EstacionesTrabajo WHERE activo = 1');
+  estacionesCache = { t: Date.now(), data: res.recordset };
+  return estacionesCache.data;
+}
+
+async function detectarEstacionTrabajo(latitud, longitud) {
+  const estaciones = await getEstacionesActivas();
 
   let estacionCercana = null;
   let distanciaMinima = Infinity;
-  for (const estacion of res.recordset) {
+  for (const estacion of estaciones) {
     const dist = calcularDistanciaMetros(latitud, longitud, estacion.latitud, estacion.longitud);
     if (dist < distanciaMinima) {
       distanciaMinima = dist;
@@ -182,6 +217,11 @@ function enviarFoto(res, dataUrl) {
 
 // ¿El error es por intentar crear un segundo turno activo? (índice único UX_RegistroAsistencia_turno_activo)
 const esTurnoDuplicado = (err) => err && (err.number === 2601 || err.number === 2627);
+
+// Último punto GPS aceptado por trabajador (en memoria): evita guardar decenas de miles de puntos casi idénticos
+const PING_MIN_GAP_MS = 5_000;      // como mínimo 5 s entre puntos guardados...
+const PING_MIN_MOVE_METERS = 10;    // ...salvo que se haya movido más de 10 m
+const lastPings = new Map();        // usuarioId -> { t, lat, lng, geo }
 
 // Emitir solo a administradores/supervisores conectados
 const emitStaff = (event, payload) => io.to('staff').emit(event, payload);
@@ -458,6 +498,7 @@ app.post('/api/workstations', requireAuth(ROLES_ADMIN), async (req, res) => {
       `);
 
     const nuevaEstacion = result.recordset[0];
+    estacionesCache = null; // la próxima consulta vuelve a leer las estaciones
     io.emit('workstations_updated', nuevaEstacion);
     res.status(201).json(nuevaEstacion);
   } catch (err) {
@@ -684,6 +725,7 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
     const result = await p.request().query(`
       SELECT
         u.id as usuario_id, u.codigo_empleado, u.nombre as nombre_usuario, u.cargo, u.telefono,
+        ${pushTablasListas ? 'CASE WHEN EXISTS (SELECT 1 FROM SuscripcionesPush sp WHERE sp.usuario_id = u.id) THEN 1 ELSE 0 END AS push_activo,' : ''}
         a.id as asistencia_id, a.hora_ingreso, CASE WHEN a.foto_ingreso_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_ingreso, a.estado as estado_asistencia,
         uv.latitud, uv.longitud, uv.precision, uv.ultimo_ping, uv.dentro_de_estacion,
         e.id as estacion_id, e.nombre as estacion_nombre, e.codigo as estacion_codigo, e.color as estacion_color
@@ -816,6 +858,7 @@ app.post('/api/attendance/check-in', requireAuth(ROLES_WORKER), async (req, res)
         SELECT * FROM @TempAsistencia;
       `);
 
+    lastPings.delete(usuarioId);
     const registro = sinFotos(registroResultado.recordset[0]);
     console.log(`🔔 [CHECK_IN] Usuario ${usuarioId} registró ENTRADA (similitud ${bio.sim}%).`);
     emitStaff('attendance_event', { tipo: 'CHECK_IN', usuarioId, asistencia: registro, geocerca: geo, fecha: new Date().toISOString() });
@@ -886,6 +929,7 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
         COMMIT TRANSACTION;
       `);
 
+    lastPings.delete(usuarioId);
     const registroCompletado = sinFotos(resActualizacion.recordset[0]);
     console.log(`🔔 [CHECK_OUT] Usuario ${usuarioId} registró SALIDA.`);
     emitStaff('attendance_event', { tipo: 'CHECK_OUT', usuarioId, asistencia: registroCompletado, fecha: new Date().toISOString() });
@@ -902,10 +946,21 @@ app.post('/api/location/ping', requireAuth(ROLES_WORKER), async (req, res) => {
     const usuarioId = req.user.id;
     if (!validCoords(latitud, longitud)) return res.status(400).json({ error: 'Parámetros incompletos' });
 
+    // Punto demasiado reciente y casi en el mismo lugar: no se guarda (responde con el último resultado)
+    const previo = lastPings.get(usuarioId);
+    if (
+      previo &&
+      Date.now() - previo.t < PING_MIN_GAP_MS &&
+      calcularDistanciaMetros(previo.lat, previo.lng, latitud, longitud) < PING_MIN_MOVE_METERS
+    ) {
+      return res.json({ exito: true, omitido: true, geocerca: previo.geo });
+    }
+
     const p = await getPool();
     const resActivo = await p.request().input('usuarioId', sql.Int, usuarioId)
       .query("SELECT id FROM RegistroAsistencia WHERE usuario_id = @usuarioId AND estado = 'activo'");
     if (resActivo.recordset.length === 0) {
+      lastPings.delete(usuarioId);
       return res.status(403).json({ error: 'El rastreo solo está permitido durante un turno activo' });
     }
 
@@ -933,6 +988,8 @@ app.post('/api/location/ping', requireAuth(ROLES_WORKER), async (req, res) => {
         VALUES (@usuarioId, @asistId, @lat, @lng, @acc, @estId);
       `);
 
+    lastPings.set(usuarioId, { t: Date.now(), lat: latitud, lng: longitud, geo });
+
     emitStaff('location_ping', {
       usuarioId,
       asistenciaId,
@@ -955,10 +1012,34 @@ app.post('/api/location/ping', requireAuth(ROLES_WORKER), async (req, res) => {
 
 app.get('/api/attendance/logs', requireAuth(ROLES_STAFF), async (req, res) => {
   try {
-    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 200, 1), 1000);
+    // Filtros: desde/hasta (fecha-hora ISO; "hasta" excluyente), q (nombre o código), limit/offset (paginación)
+    const parseFecha = (v) => {
+      if (v === undefined || v === '') return null;
+      const d = new Date(String(v));
+      return Number.isNaN(d.getTime()) ? undefined : d;
+    };
+    const desde = parseFecha(req.query.desde);
+    const hasta = parseFecha(req.query.hasta);
+    if (desde === undefined || hasta === undefined) return res.status(400).json({ error: 'Fecha inválida' });
+
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 50, 1), 1000);
+    const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : '';
+    const qLike = q ? `%${q.replace(/[\[\]%_]/g, (c) => `[${c}]`)}%` : null; // escapa los comodines de LIKE
+
+    const filtro = `
+      WHERE (@desde IS NULL OR a.hora_ingreso >= @desde)
+        AND (@hasta IS NULL OR a.hora_ingreso < @hasta)
+        AND (@q IS NULL OR u.nombre LIKE @q OR u.codigo_empleado LIKE @q)`;
+    const bind = (r) =>
+      r.input('desde', sql.DateTime2, desde).input('hasta', sql.DateTime2, hasta).input('q', sql.NVarChar(120), qLike);
+
     const p = await getPool();
-    const result = await p.request().input('limit', sql.Int, limit).query(`
-      SELECT TOP (@limit)
+    const total = await bind(p.request()).query(
+      `SELECT COUNT(*) AS total FROM RegistroAsistencia a JOIN Usuarios u ON a.usuario_id = u.id ${filtro}`
+    );
+    const result = await bind(p.request()).input('offset', sql.Int, offset).input('limit', sql.Int, limit).query(`
+      SELECT
         a.id, a.usuario_id, u.nombre as nombre_usuario, u.codigo_empleado, u.cargo,
         ISNULL(DATALENGTH(u.foto_referencia_url), 0) AS foto_ref_bytes,
         a.hora_ingreso, a.hora_salida, a.latitud_ingreso, a.longitud_ingreso, a.latitud_salida, a.longitud_salida,
@@ -971,8 +1052,11 @@ app.get('/api/attendance/logs', requireAuth(ROLES_STAFF), async (req, res) => {
       JOIN Usuarios u ON a.usuario_id = u.id
       LEFT JOIN EstacionesTrabajo eIng ON a.estacion_ingreso_id = eIng.id
       LEFT JOIN EstacionesTrabajo eSal ON a.estacion_salida_id = eSal.id
-      ORDER BY a.hora_ingreso DESC;
+      ${filtro}
+      ORDER BY a.hora_ingreso DESC, a.id DESC
+      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;
     `);
+    res.setHeader('X-Total-Count', String(total.recordset[0].total));
     res.json(result.recordset);
   } catch (err) {
     fail(res, err);
@@ -993,6 +1077,185 @@ app.get('/api/attendance/fraud-logs', requireAuth(ROLES_STAFF), async (req, res)
       ORDER BY f.fecha_intento DESC;
     `);
     res.json(result.recordset);
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ----------------- NOTIFICACIONES PUSH / ALERTAS -----------------
+
+const MENSAJE_ALERTA_DEFECTO = 'Estás fuera de tu zona de trabajo. Regresa a tu estación asignada.';
+const lastAlertas = new Map(); // usuarioId -> instante de la última alerta (evita el envío repetido por error)
+
+function pushDisponible(res) {
+  if (!pushConfigurado) {
+    res.status(503).json({ error: 'Las notificaciones no están configuradas en el servidor (faltan las claves VAPID).' });
+    return false;
+  }
+  if (!pushTablasListas) {
+    res.status(503).json({ error: 'Falta preparar la base de datos para las notificaciones: ejecuta  npm run migrate-push' });
+    return false;
+  }
+  return true;
+}
+
+// El celular consulta si el servidor admite notificaciones y obtiene la clave pública para suscribirse
+app.get('/api/push/config', requireAuth(), (req, res) => {
+  const habilitado = pushConfigurado && pushTablasListas;
+  res.json({ habilitado, publicKey: habilitado ? config.vapidPublicKey : null });
+});
+
+// El celular registra (o actualiza) su suscripción. Es idempotente: se puede llamar en cada inicio de sesión.
+app.post('/api/push/subscribe', requireAuth(ROLES_WORKER), async (req, res) => {
+  try {
+    if (!pushDisponible(res)) return;
+    const sub = req.body?.subscription;
+    const endpoint = sub?.endpoint;
+    const p256dh = sub?.keys?.p256dh;
+    const authKey = sub?.keys?.auth;
+    const ok =
+      typeof endpoint === 'string' && endpoint.startsWith('https://') && endpoint.length <= 450 &&
+      typeof p256dh === 'string' && p256dh.length > 0 && p256dh.length <= 200 &&
+      typeof authKey === 'string' && authKey.length > 0 && authKey.length <= 100;
+    if (!ok) return res.status(400).json({ error: 'Suscripción inválida' });
+
+    const userAgent = typeof req.body?.userAgent === 'string' ? req.body.userAgent.slice(0, 300) : null;
+    const p = await getPool();
+    // Si el mismo dispositivo cambia de trabajador (celular compartido), la suscripción pasa al nuevo usuario
+    await p.request()
+      .input('u', sql.Int, req.user.id)
+      .input('endpoint', sql.NVarChar(450), endpoint)
+      .input('p256dh', sql.NVarChar(200), p256dh)
+      .input('auth', sql.NVarChar(100), authKey)
+      .input('ua', sql.NVarChar(300), userAgent)
+      .query(`
+        MERGE SuscripcionesPush AS t
+        USING (SELECT @endpoint AS endpoint) AS s ON t.endpoint = s.endpoint
+        WHEN MATCHED THEN UPDATE SET usuario_id = @u, p256dh = @p256dh, auth = @auth, user_agent = @ua
+        WHEN NOT MATCHED THEN INSERT (usuario_id, endpoint, p256dh, auth, user_agent) VALUES (@u, @endpoint, @p256dh, @auth, @ua);
+
+        -- como máximo 5 dispositivos por trabajador: se conservan los más recientes
+        DELETE FROM SuscripcionesPush
+         WHERE usuario_id = @u AND id NOT IN (SELECT TOP 5 id FROM SuscripcionesPush WHERE usuario_id = @u ORDER BY id DESC);
+      `);
+    res.json({ exito: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.post('/api/push/unsubscribe', requireAuth(ROLES_WORKER), async (req, res) => {
+  try {
+    if (!pushDisponible(res)) return;
+    const endpoint = req.body?.endpoint;
+    if (typeof endpoint !== 'string' || endpoint.length > 450) return res.status(400).json({ error: 'Solicitud inválida' });
+    const p = await getPool();
+    await p.request().input('u', sql.Int, req.user.id).input('endpoint', sql.NVarChar(450), endpoint)
+      .query('DELETE FROM SuscripcionesPush WHERE usuario_id = @u AND endpoint = @endpoint');
+    res.json({ exito: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Un administrador/supervisor envía una alerta a un trabajador
+app.post('/api/push/send', requireAuth(ROLES_STAFF), async (req, res) => {
+  try {
+    if (!pushDisponible(res)) return;
+    const usuarioId = Number.parseInt(req.body?.usuarioId, 10);
+    if (!Number.isInteger(usuarioId)) return res.status(400).json({ error: 'Trabajador inválido' });
+
+    const mensaje = (typeof req.body?.mensaje === 'string' ? req.body.mensaje.trim() : '') || MENSAJE_ALERTA_DEFECTO;
+    if (mensaje.length > 200) return res.status(400).json({ error: 'El mensaje no puede pasar de 200 caracteres' });
+
+    const p = await getPool();
+    const u = await p.request().input('id', sql.Int, usuarioId)
+      .query("SELECT id, nombre FROM Usuarios WHERE id = @id AND rol = 'trabajador' AND activo = 1");
+    if (!u.recordset.length) return res.status(404).json({ error: 'Trabajador no encontrado' });
+
+    const previa = lastAlertas.get(usuarioId);
+    if (previa && Date.now() - previa < 15_000) {
+      return res.status(429).json({ error: 'Acabas de enviar una alerta a este trabajador. Espera unos segundos.' });
+    }
+    lastAlertas.set(usuarioId, Date.now());
+
+    // Auditoría: queda registrada aunque el celular no la reciba
+    const reg = await p.request()
+      .input('u', sql.Int, usuarioId).input('por', sql.Int, req.user.id).input('m', sql.NVarChar(300), mensaje)
+      .query('INSERT INTO AlertasEnviadas (usuario_id, enviado_por, mensaje) OUTPUT INSERTED.id VALUES (@u, @por, @m)');
+    const alertaId = reg.recordset[0].id;
+
+    const subs = (await p.request().input('u', sql.Int, usuarioId)
+      .query('SELECT id, endpoint, p256dh, auth FROM SuscripcionesPush WHERE usuario_id = @u')).recordset;
+
+    const payload = JSON.stringify({
+      title: '⚠️ Alerta de SMI Asistencia',
+      body: mensaje,
+      tag: 'smi-alerta',
+      alertaId,
+      url: `/?alerta=${alertaId}`,
+    });
+
+    // urgency "high" + TTL de 1 hora: el sistema del celular la entrega aunque esté en reposo
+    const resultados = await Promise.allSettled(
+      subs.map((s) =>
+        webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload, {
+          TTL: 3600,
+          urgency: 'high',
+          timeout: 8000,
+        })
+      )
+    );
+
+    let exitosos = 0;
+    const caducadas = [];
+    resultados.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        exitosos += 1;
+      } else if (r.reason?.statusCode === 404 || r.reason?.statusCode === 410) {
+        caducadas.push(subs[i].id); // el celular ya no está suscrito (desinstaló la app o revocó el permiso)
+      } else {
+        console.warn(`Alerta ${alertaId}: fallo al enviar a un dispositivo (${r.reason?.statusCode || r.reason?.message})`);
+      }
+    });
+
+    for (const id of caducadas) {
+      await p.request().input('id', sql.Int, id).query('DELETE FROM SuscripcionesPush WHERE id = @id');
+    }
+    await p.request().input('id', sql.Int, alertaId).input('d', sql.Int, subs.length).input('e', sql.Int, exitosos)
+      .query('UPDATE AlertasEnviadas SET dispositivos = @d, exitosos = @e WHERE id = @id');
+
+    // Si el trabajador tiene la app abierta, además se le avisa al instante dentro de la app
+    io.to(`user:${usuarioId}`).emit('alerta', { id: alertaId, mensaje, fecha: new Date().toISOString() });
+    const enApp = (await io.in(`user:${usuarioId}`).fetchSockets()).length > 0;
+
+    console.log(`🔔 [ALERTA ${alertaId}] ${req.user.id} -> usuario ${usuarioId}: ${exitosos}/${subs.length} dispositivos, app abierta: ${enApp}`);
+    res.json({
+      alertaId,
+      trabajador: u.recordset[0].nombre,
+      dispositivos: subs.length,
+      entregadosAlServicioPush: exitosos,
+      caducados: caducadas.length,
+      appAbierta: enApp,
+    });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// El trabajador abrió/leyó la alerta: se registra y se avisa a los administradores
+app.post('/api/push/alertas/:id/leida', requireAuth(ROLES_WORKER), async (req, res) => {
+  try {
+    if (!pushDisponible(res)) return;
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Solicitud inválida' });
+    const p = await getPool();
+    const r = await p.request().input('id', sql.Int, id).input('u', sql.Int, req.user.id)
+      .query('UPDATE AlertasEnviadas SET leida_en = GETDATE() WHERE id = @id AND usuario_id = @u AND leida_en IS NULL');
+    if (r.rowsAffected[0]) {
+      emitStaff('alerta_leida', { alertaId: id, usuarioId: req.user.id, fecha: new Date().toISOString() });
+    }
+    res.json({ exito: true });
   } catch (err) {
     fail(res, err);
   }
@@ -1055,6 +1318,7 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   if (ROLES_STAFF.includes(socket.data.user.rol)) socket.join('staff');
+  socket.join(`user:${socket.data.user.id}`);
   console.log(`🔌 Socket conectado (usuario ${socket.data.user.id}, ${socket.data.user.rol})`);
   socket.on('disconnect', () => {
     console.log(`🔌 Socket desconectado (usuario ${socket.data.user.id})`);
@@ -1073,7 +1337,7 @@ if (fs.existsSync(path.join(distDir, 'index.html'))) {
         const base = path.basename(filePath);
         if (filePath.includes(`${path.sep}assets${path.sep}`)) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // archivos con hash
-        } else if (/^(sw\.js|workbox-.*\.js|index\.html|manifest\.webmanifest|registerSW\.js)$/.test(base)) {
+        } else if (/^(sw\.js|push-sw\.js|workbox-.*\.js|index\.html|manifest\.webmanifest|registerSW\.js)$/.test(base)) {
           res.setHeader('Cache-Control', 'no-cache');
         } else {
           res.setHeader('Cache-Control', 'public, max-age=86400');
@@ -1098,10 +1362,39 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Error interno del servidor' });
 });
 
+// Retención opcional del historial de puntos GPS. Solo actúa si RETENCION_UBICACIONES_DIAS está definida (> 0).
+// Borra en lotes pequeños para no bloquear la base. Por defecto NO borra nada.
+const retencionDias = Number(process.env.RETENCION_UBICACIONES_DIAS || 0);
+async function purgarHistorialUbicaciones() {
+  if (!(retencionDias >= 7)) return; // mínimo 7 días: evita borrar de más por una configuración equivocada
+  try {
+    const p = await getPool();
+    let total = 0;
+    for (;;) {
+      const r = await p.request().input('dias', sql.Int, retencionDias).query(
+        'DELETE TOP (5000) FROM HistorialUbicaciones WHERE fecha_registro < DATEADD(DAY, -@dias, GETDATE())'
+      );
+      const borradas = r.rowsAffected[0] || 0;
+      total += borradas;
+      if (borradas < 5000) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    if (total) console.log(`🧹 Retención: ${total} puntos GPS de más de ${retencionDias} días eliminados.`);
+  } catch (err) {
+    console.error('Error en la retención de puntos GPS:', err.message);
+  }
+}
+if (retencionDias > 0) {
+  if (retencionDias < 7) console.warn('⚠️ RETENCION_UBICACIONES_DIAS debe ser al menos 7; la retención queda desactivada.');
+  setTimeout(purgarHistorialUbicaciones, 2 * 60 * 1000).unref();
+  setInterval(purgarHistorialUbicaciones, 24 * 60 * 60 * 1000).unref();
+}
+
 server.listen(config.port, '0.0.0.0', () => {
   console.log(`🚀 Servidor SMI Asistencia & GPS corriendo en ${useTls ? 'https' : 'http'}://0.0.0.0:${config.port} (${isProduction ? 'producción' : 'desarrollo'})`);
   if (isProduction && !useTls && !config.trustProxy) {
     console.warn('⚠️ Producción sin HTTPS: la cámara y el GPS del celular exigen HTTPS (usa SSL_KEY_PATH/SSL_CERT_PATH o un proxy inverso con TRUST_PROXY=1).');
   }
   checkPinColumn();
+  checkPushTables();
 });

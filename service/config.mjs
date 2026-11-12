@@ -45,6 +45,10 @@ export const config = {
   faceMatchThreshold: Number(env.FACE_MATCH_THRESHOLD || 0.58),
   // Intentos de login FALLIDOS por IP en 10 min. Alto a propósito: toda una planta suele salir por la misma IP.
   loginIpMax: Number(env.LOGIN_IP_MAX || 60),
+  // Notificaciones push (se generan con: npm run vapid). Sin ellas, las alertas quedan desactivadas.
+  vapidPublicKey: env.VAPID_PUBLIC_KEY || '',
+  vapidPrivateKey: env.VAPID_PRIVATE_KEY || '',
+  vapidSubject: env.VAPID_SUBJECT || 'mailto:admin@example.com',
   sessionHours: Number(env.SESSION_HOURS || 12),
   adminSessionHours: Number(env.ADMIN_SESSION_HOURS || 8),
   // TLS opcional directo en Node (si no se usa un proxy inverso como nginx/Caddy)

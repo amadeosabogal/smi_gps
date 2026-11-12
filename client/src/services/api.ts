@@ -62,13 +62,19 @@ const photoCache = new Map<string, Promise<string>>();
 let bioTicket: string | null = null;
 
 /** Petición autenticada. Si el servidor responde 401 se cierra la sesión local. */
-async function request(path: string, init: RequestInit = {}, opts: { auth?: boolean } = {}) {
+async function request(
+  path: string,
+  init: RequestInit = {},
+  opts: { auth?: boolean; onHeaders?: (h: Headers) => void } = {}
+) {
   const headers: Record<string, string> = { ...(init.headers as Record<string, string>) };
   if (init.body !== undefined) headers['Content-Type'] = 'application/json';
   const token = auth.getToken();
   if (token && opts.auth !== false) headers.Authorization = `Bearer ${token}`;
 
   const res = await fetch(`${getApiBase()}${path}`, { ...init, headers });
+
+  opts.onHeaders?.(res.headers);
 
   let data: any = null;
   try {
@@ -141,6 +147,36 @@ export const api = {
 
   async getMyShift(): Promise<any | null> {
     return request('/me/shift');
+  },
+
+  // ----- Notificaciones / alertas -----
+  async getPushConfig(): Promise<{ habilitado: boolean; publicKey: string | null }> {
+    return request('/push/config');
+  },
+
+  async pushSubscribe(subscription: PushSubscriptionJSON, userAgent: string) {
+    return request('/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription, userAgent }) });
+  },
+
+  async pushUnsubscribe(endpoint: string) {
+    return request('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint }) });
+  },
+
+  /** Administrador/supervisor: envía una alerta al celular de un trabajador. */
+  async sendAlert(usuarioId: number, mensaje: string): Promise<{
+    alertaId: number;
+    trabajador: string;
+    dispositivos: number;
+    entregadosAlServicioPush: number;
+    caducados: number;
+    appAbierta: boolean;
+  }> {
+    return request('/push/send', { method: 'POST', body: JSON.stringify({ usuarioId, mensaje }) });
+  },
+
+  /** Trabajador: marca la alerta como leída (se le avisa al administrador). */
+  async ackAlert(alertaId: number) {
+    return request(`/push/alertas/${alertaId}/leida`, { method: 'POST' });
   },
 
   // ----- Biometría facial (se compara en el servidor) -----
@@ -259,7 +295,18 @@ export const api = {
   },
 
   // Historial de Asistencia
-  async getAttendanceLogs(): Promise<RegistroAsistencia[]> {
-    return request('/attendance/logs');
+  /** Historial paginado. desde/hasta son fecha-hora ISO ("hasta" excluyente); q busca por nombre o código. */
+  async getAttendanceLogs(
+    params: { desde?: string; hasta?: string; q?: string; limit?: number; offset?: number } = {}
+  ): Promise<{ items: RegistroAsistencia[]; total: number }> {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') qs.set(k, String(v));
+    let total = 0;
+    const items: RegistroAsistencia[] = await request(`/attendance/logs${qs.toString() ? `?${qs}` : ''}`, {}, {
+      onHeaders: (h) => {
+        total = Number(h.get('X-Total-Count') || 0);
+      },
+    });
+    return { items, total: total || items.length };
   },
 };

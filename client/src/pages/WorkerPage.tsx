@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api, auth } from '../services/api';
 import { socket, connectSocket, disconnectSocket } from '../services/socket';
 import { geolocationService, type CoordsData } from '../services/geolocation';
@@ -16,6 +16,8 @@ import {
 import { BiometricVerificationModal } from '../components/BiometricVerificationModal';
 import { faceRecognitionService } from '../services/faceRecognition';
 import { eyeBlinkService } from '../services/eyeBlink';
+import { PushAlertCard } from '../components/PushAlertCard';
+import { syncPush, releasePush } from '../services/push';
 
 export const WorkerPage: React.FC = () => {
   const [workers, setWorkers] = useState<Usuario[]>([]);
@@ -26,6 +28,7 @@ export const WorkerPage: React.FC = () => {
   const [pinInput, setPinInput] = useState<string>('');
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => Boolean(auth.getToken()));
   const [loginLoading, setLoginLoading] = useState<boolean>(false);
+  const [alertaActiva, setAlertaActiva] = useState<{ id: number | null; mensaje: string } | null>(null);
 
   // Shift & tracking state
   const [isActiveShift, setIsActiveShift] = useState<boolean>(false);
@@ -170,11 +173,35 @@ export const WorkerPage: React.FC = () => {
       .padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  // Control de frecuencia: el GPS puede avisar cada segundo, pero guardar un punto por segundo llenaría la base
+  // de datos y saturaría el servidor. Se envía un punto cada 15 s, o antes (mín. 5 s) si el trabajador se movió.
+  const lastPingRef = useRef<{ t: number; lat: number; lng: number } | null>(null);
+
+  const metersBetween = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const rad = (x: number) => (x * Math.PI) / 180;
+    const a =
+      Math.sin(rad(lat2 - lat1) / 2) ** 2 +
+      Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lon2 - lon1) / 2) ** 2;
+    return 6371e3 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
   // Continuous tracking helper
   const startContinuousTracking = (usuarioId: number) => {
+    lastPingRef.current = null;
     geolocationService.startTracking(
       async (coords) => {
         setCurrentCoords(coords);
+
+        const last = lastPingRef.current;
+        const now = Date.now();
+        if (last) {
+          const elapsed = now - last.t;
+          const moved = metersBetween(last.lat, last.lng, coords.latitude, coords.longitude);
+          const toca = elapsed >= 15_000 || (moved >= 25 && elapsed >= 5_000);
+          if (!toca) return;
+        }
+        lastPingRef.current = { t: now, lat: coords.latitude, lng: coords.longitude };
+
         try {
           const res = await api.sendLocationPing(
             usuarioId,
@@ -218,7 +245,7 @@ export const WorkerPage: React.FC = () => {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     if (isActiveShift) {
       const confirm = window.confirm(
         'Tienes un turno activo. Para cerrar sesión de forma segura, primero debes registrar tu salida. ¿Deseas continuar?'
@@ -226,6 +253,9 @@ export const WorkerPage: React.FC = () => {
       if (!confirm) return;
     }
     geolocationService.stopTracking();
+    // Antes de cerrar la sesión se desvincula este celular, para que las alertas de este trabajador no lleguen a otra persona
+    // (con un tope de 2.5 s por si no hay red)
+    await Promise.race([releasePush(), new Promise((resolve) => setTimeout(resolve, 2500))]);
     api.logout();
     disconnectSocket();
     setIsAuthenticated(false);
@@ -252,6 +282,43 @@ export const WorkerPage: React.FC = () => {
       console.error('Error comprobando estado de GPS:', err);
     }
   }, []);
+
+  // Recepción de alertas: por el socket (app abierta), por el service worker (app visible) o al tocar la notificación
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const mostrar = (id: number | null, mensaje: string) => {
+      setAlertaActiva({ id, mensaje });
+      if ('vibrate' in navigator) navigator.vibrate([300, 150, 300, 150, 600]);
+    };
+
+    const onSocketAlert = (a: { id: number; mensaje: string }) => mostrar(a.id, a.mensaje);
+    socket.on('alerta', onSocketAlert);
+
+    const onSwMessage = (e: MessageEvent) => {
+      if (e.data?.type === 'alerta') mostrar(e.data.id ?? null, e.data.mensaje || '');
+      // El trabajador tocó la notificación del sistema: queda como leída
+      if (e.data?.type === 'alerta-abierta' && e.data.id) api.ackAlert(e.data.id).catch(() => {});
+    };
+    navigator.serviceWorker?.addEventListener('message', onSwMessage);
+
+    // La notificación abrió la app con /?alerta=ID: se marca como leída y se limpia la dirección
+    const url = new URL(window.location.href);
+    const alertaId = Number(url.searchParams.get('alerta'));
+    if (alertaId) {
+      api.ackAlert(alertaId).catch(() => {});
+      url.searchParams.delete('alerta');
+      window.history.replaceState({}, '', url.pathname + url.search);
+    }
+
+    // Si ya había dado permiso, se vuelve a registrar este celular en el servidor (sin preguntar nada)
+    syncPush();
+
+    return () => {
+      socket.off('alerta', onSocketAlert);
+      navigator.serviceWorker?.removeEventListener('message', onSwMessage);
+    };
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -547,6 +614,29 @@ export const WorkerPage: React.FC = () => {
       </header>
 
       {/* Main Body */}
+      {/* Alerta del supervisor (con la app abierta) */}
+      {alertaActiva && (
+        <div className="fixed inset-x-0 top-0 z-[60] p-3">
+          <div className="max-w-md mx-auto bg-amber-400 text-slate-900 rounded-2xl shadow-2xl border-2 border-amber-200 p-4">
+            <p className="font-extrabold text-sm flex items-center space-x-1.5">
+              <span>⚠️</span>
+              <span>Alerta de tu supervisor</span>
+            </p>
+            <p className="text-sm font-semibold mt-1.5 leading-snug">{alertaActiva.mensaje}</p>
+            <button
+              type="button"
+              onClick={() => {
+                if (alertaActiva.id) api.ackAlert(alertaActiva.id).catch(() => {});
+                setAlertaActiva(null);
+              }}
+              className="mt-3 w-full py-2 bg-slate-900 text-white text-xs font-extrabold rounded-xl active:scale-95 transition"
+            >
+              Entendido
+            </button>
+          </div>
+        </div>
+      )}
+
       <main className="flex-1 max-w-md w-full mx-auto px-4 py-5 flex flex-col justify-between">
         <div className="space-y-4">
           {/* Worker Profile Card */}
@@ -579,6 +669,9 @@ export const WorkerPage: React.FC = () => {
               {selectedUser?.codigo_empleado}
             </span>
           </div>
+
+          {/* Alertas del supervisor en el celular (push) */}
+          <PushAlertCard />
 
           {/* Tarjeta de Permiso y Conexión GPS del Celular */}
           {gpsPermissionStatus !== 'granted' ? (

@@ -21,7 +21,11 @@
     "build:prod": "npm run build --prefix client",
     "migrate-security": "node service/migrate-security.mjs",
     "set-pin": "node service/set-pin.mjs",
-    "migrate-turnos": "node service/migrate-turnos.mjs"
+    "migrate-turnos": "node service/migrate-turnos.mjs",
+    "migrate-historial": "node service/migrate-historial.mjs",
+    "purge-historial": "node service/purge-historial.mjs",
+    "vapid": "node service/generate-vapid.mjs",
+    "migrate-push": "node service/migrate-push.mjs"
   },
   "dependencies": {
     "@capacitor/app": "^8.1.2",

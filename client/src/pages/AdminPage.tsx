@@ -36,6 +36,23 @@ import {
   UserCheck,
 } from 'lucide-react';
 
+// Fechas locales en formato AAAA-MM-DD (lo que usan los <input type="date">)
+const toInputDate = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const daysAgo = (n: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d;
+};
+const LOGS_PAGE_SIZE = 50;
+
+// Mensajes rápidos para las alertas al celular del trabajador
+const ALERT_PRESETS = [
+  'Estás fuera de tu zona de trabajo. Regresa a tu estación asignada.',
+  'Por favor comunícate con tu supervisor lo antes posible.',
+  'Recuerda registrar tu salida al terminar tu turno.',
+];
+
 // Formatea milisegundos como HH:MM:SS (las horas pueden pasar de 24)
 const formatElapsed = (ms: number) => {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -71,6 +88,18 @@ export const AdminPage: React.FC = () => {
   const [workstations, setWorkstations] = useState<EstacionTrabajo[]>([]);
   const [attendanceLogs, setAttendanceLogs] = useState<RegistroAsistencia[]>([]);
   const [liveWorkers, setLiveWorkers] = useState<DatosTrabajadorEnVivo[]>([]);
+  // Historial de asistencia: filtro por fechas, búsqueda en el servidor y paginación
+  const [logsDesde, setLogsDesde] = useState<string>(() => toInputDate(daysAgo(6)));
+  const [logsHasta, setLogsHasta] = useState<string>(() => toInputDate(new Date()));
+  const [logsPage, setLogsPage] = useState<number>(0);
+  const [logsTotal, setLogsTotal] = useState<number>(0);
+  const [logsSearch, setLogsSearch] = useState<string>('');
+  const [exporting, setExporting] = useState<boolean>(false);
+
+  // Alertas push al celular del trabajador
+  const [alertTarget, setAlertTarget] = useState<DatosTrabajadorEnVivo | null>(null);
+  const [alertMsg, setAlertMsg] = useState<string>('');
+  const [alertSending, setAlertSending] = useState<boolean>(false);
   const [clockOffsetMs, setClockOffsetMs] = useState<number>(0); // reloj del servidor - reloj de este equipo
   const [workersList, setWorkersList] = useState<Usuario[]>([]);
   const [fraudLogs, setFraudLogs] = useState<AuditoriaFraudeFacial[]>([]);
@@ -203,6 +232,8 @@ export const AdminPage: React.FC = () => {
   //   - Listados completos (estaciones, historial, usuarios, alertas): cada 30 s, y agrupados en una sola
   //     recarga cuando llegan eventos (un lote de 30 marcas = 1 recarga, no 30).
   //   - Las fotos ya no viajan en los listados: se piden una por una al verlas.
+  const liveWorkersRef = useRef<DatosTrabajadorEnVivo[]>([]);
+  liveWorkersRef.current = liveWorkers;
   const liveInFlight = useRef<boolean>(false);
   const heavyInFlight = useRef<boolean>(false);
   const heavyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -227,14 +258,12 @@ export const AdminPage: React.FC = () => {
     if (heavyInFlight.current) return;
     heavyInFlight.current = true;
     try {
-      const [stationsData, logsData, usersData, fraudData] = await Promise.all([
+      const [stationsData, usersData, fraudData] = await Promise.all([
         api.getWorkstations(),
-        api.getAttendanceLogs(),
         api.getUsers(),
         api.getFraudLogs(),
       ]);
       setWorkstations(stationsData);
-      setAttendanceLogs(logsData);
       setWorkersList(usersData);
       setFraudLogs(fraudData);
     } catch (err) {
@@ -245,19 +274,75 @@ export const AdminPage: React.FC = () => {
     }
   }, []);
 
+  // Parámetros del historial según los filtros elegidos (las fechas se interpretan en hora local)
+  const logsParams = useCallback(() => {
+    const desde = logsDesde ? new Date(`${logsDesde}T00:00:00`).toISOString() : undefined;
+    let hasta: string | undefined;
+    if (logsHasta) {
+      const d = new Date(`${logsHasta}T00:00:00`);
+      d.setDate(d.getDate() + 1); // "hasta" incluye todo ese día
+      hasta = d.toISOString();
+    }
+    return { desde, hasta, q: logsSearch || undefined };
+  }, [logsDesde, logsHasta, logsSearch]);
+
+  // Historial de asistencia: solo la página que se está viendo
+  const loadLogs = useCallback(async () => {
+    try {
+      const { items, total } = await api.getAttendanceLogs({
+        ...logsParams(),
+        limit: LOGS_PAGE_SIZE,
+        offset: logsPage * LOGS_PAGE_SIZE,
+      });
+      setAttendanceLogs(items);
+      setLogsTotal(total);
+    } catch (err) {
+      console.error('Error cargando el historial de asistencia:', err);
+    }
+  }, [logsParams, logsPage]);
+  const loadLogsRef = useRef(loadLogs);
+  loadLogsRef.current = loadLogs;
+
+  // Listados completos + historial (siempre con los filtros actuales)
+  const refreshLists = useCallback(() => {
+    loadHeavy();
+    loadLogsRef.current();
+  }, [loadHeavy]);
+
   // Agrupa muchas notificaciones seguidas en una sola recarga de listados
   const scheduleHeavyReload = useCallback(() => {
     if (heavyTimer.current) clearTimeout(heavyTimer.current);
     heavyTimer.current = setTimeout(() => {
       heavyTimer.current = null;
-      loadHeavy();
+      refreshLists();
     }, 1500);
-  }, [loadHeavy]);
+  }, [refreshLists]);
 
   // Recarga completa (tras crear/editar algo desde el panel)
   const loadData = useCallback(async () => {
-    await Promise.all([loadLive(), loadHeavy()]);
-  }, [loadLive, loadHeavy]);
+    await Promise.all([loadLive(), loadHeavy(), loadLogs()]);
+  }, [loadLive, loadHeavy, loadLogs]);
+
+  // El historial se recarga solo cuando cambian el rango de fechas, la búsqueda o la página
+  useEffect(() => {
+    if (isAdminAuthenticated) loadLogs();
+  }, [isAdminAuthenticated, loadLogs]);
+
+  // La búsqueda se envía al servidor con una pequeña espera para no pedir en cada tecla
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setLogsSearch(searchTerm.trim());
+      setLogsPage(0);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [searchTerm]);
+
+  // Si el total baja (p. ej. al filtrar) y la página queda fuera de rango, volver a la última válida
+  useEffect(() => {
+    if (logsPage > 0 && logsPage * LOGS_PAGE_SIZE >= logsTotal) {
+      setLogsPage(Math.max(0, Math.ceil(logsTotal / LOGS_PAGE_SIZE) - 1));
+    }
+  }, [logsTotal, logsPage]);
 
   useEffect(() => {
     if (!isAdminAuthenticated) return;
@@ -265,14 +350,15 @@ export const AdminPage: React.FC = () => {
     // Asegurar que el socket esté conectado (usa el token de la sesión)
     connectSocket();
 
-    loadData();
+    loadLive();
+    loadHeavy();
 
     // Sincronización de respaldo: estado en vivo cada 3 s (liviano) y listados completos cada 30 s
     const syncInterval = setInterval(() => {
       loadLive();
     }, 3000);
     const heavyInterval = setInterval(() => {
-      loadHeavy();
+      refreshLists();
     }, 30000);
 
     const onConnect = () => {
@@ -343,6 +429,13 @@ export const AdminPage: React.FC = () => {
       });
     });
 
+    // El trabajador abrió/leyó la alerta que se le envió
+    socket.on('alerta_leida', (d: any) => {
+      const nombre = liveWorkersRef.current.find((w) => w.usuario_id === d?.usuarioId)?.nombre_usuario || 'El trabajador';
+      const hora = new Date().toLocaleTimeString();
+      setRecentNotification({ texto: `✓ ${nombre} leyó la alerta (${hora})`, fecha: hora });
+    });
+
     // Evento de Enrolamiento Facial
     socket.on('user_face_enrolled', (data: any) => {
       console.log('👤 Rostro enrolado en tiempo real:', data);
@@ -363,9 +456,35 @@ export const AdminPage: React.FC = () => {
       socket.off('attendance_event');
       socket.off('fraud_alert');
       socket.off('user_face_enrolled');
+      socket.off('alerta_leida');
       socket.off('workstations_updated');
     };
-  }, [isAdminAuthenticated, loadData, loadLive, loadHeavy, scheduleHeavyReload]);
+  }, [isAdminAuthenticated, loadLive, loadHeavy, refreshLists, scheduleHeavyReload]);
+
+  // Envía la alerta al celular del trabajador (llega aunque tenga la pantalla apagada)
+  const handleSendAlert = async () => {
+    if (!alertTarget || alertSending) return;
+    setAlertSending(true);
+    try {
+      const r = await api.sendAlert(alertTarget.usuario_id, alertMsg.trim());
+      const hora = new Date().toLocaleTimeString();
+      let texto: string;
+      if (r.dispositivos === 0 && !r.appAbierta) {
+        texto = `⚠️ ${r.trabajador} no tiene las alertas activadas en su celular: solo la verá si abre la app (${hora})`;
+      } else if (r.dispositivos > 0 && r.entregadosAlServicioPush === 0 && !r.appAbierta) {
+        texto = `⚠️ No se pudo entregar la alerta a ${r.trabajador}: su celular no respondió (${hora})`;
+      } else {
+        texto = `🔔 Alerta enviada a ${r.trabajador}${r.appAbierta ? ' (tiene la app abierta)' : ''} (${hora})`;
+      }
+      setRecentNotification({ texto, fecha: hora });
+      setAlertTarget(null);
+      setAlertMsg('');
+    } catch (err: any) {
+      alert(err.message || 'No se pudo enviar la alerta');
+    } finally {
+      setAlertSending(false);
+    }
+  };
 
   // Ingreso de administrador: el servidor valida código + clave (con límite de intentos)
   const handleAdminLogin = async (e: React.FormEvent) => {
@@ -428,11 +547,8 @@ export const AdminPage: React.FC = () => {
       w.cargo.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const filteredLogs = attendanceLogs.filter(
-    (log) =>
-      (log.nombre_usuario || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (log.codigo_empleado || '').toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // El historial ya llega filtrado y paginado desde el servidor (fechas + búsqueda)
+  const filteredLogs = attendanceLogs;
 
   const filteredWorkersList = workersList.filter(
     (w) =>
@@ -448,56 +564,59 @@ export const AdminPage: React.FC = () => {
       (f.tipo_evento || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  // Export CSV
-  const handleExportCSV = () => {
-    if (attendanceLogs.length === 0) {
-      alert('No hay registros para exportar');
-      return;
+  // Exporta TODO el rango filtrado (no solo la página visible), pidiéndolo al servidor por tandas
+  const handleExportCSV = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const PAGE = 1000;
+      const MAX = 50000;
+      const todos: RegistroAsistencia[] = [];
+      for (let offset = 0; offset < MAX; offset += PAGE) {
+        const { items, total } = await api.getAttendanceLogs({ ...logsParams(), limit: PAGE, offset });
+        todos.push(...items);
+        if (todos.length >= total || items.length < PAGE) break;
+      }
+      if (todos.length === 0) {
+        alert('No hay registros para exportar en este rango');
+        return;
+      }
+
+      const q = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const headers = [
+        'ID', 'Código Empleado', 'Trabajador', 'Cargo', 'Hora Ingreso', 'Estación Ingreso', 'Hora Salida',
+        'Estación Salida', 'Horas Totales', 'Similitud Facial', 'Biometría Exitosa', 'Método Validación', 'Estado',
+      ];
+      const rows = todos.map((log) => [
+        log.id,
+        q(log.codigo_empleado),
+        q(log.nombre_usuario),
+        q(log.cargo),
+        q(log.hora_ingreso ? new Date(log.hora_ingreso).toLocaleString() : ''),
+        q(log.estacion_ingreso_nombre || 'Fuera de estación'),
+        q(log.hora_salida ? new Date(log.hora_salida).toLocaleString() : 'En curso'),
+        q(log.estacion_salida_nombre),
+        log.horas_totales ?? '',
+        log.similitud_facial !== null && log.similitud_facial !== undefined ? `${Math.round(log.similitud_facial)}%` : '',
+        log.verificacion_facial_exitosa ? 'SI' : 'NO',
+        q(log.metodo_validacion || 'facial_biometrico'),
+        log.estado,
+      ]);
+
+      const csv = '\uFEFF' + [headers.map(q).join(','), ...rows.map((r) => r.join(','))].join('\n');
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `SMI_Asistencia_${logsDesde || 'inicio'}_${logsHasta || 'hoy'}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert(err.message || 'No se pudo exportar el historial');
+    } finally {
+      setExporting(false);
     }
-
-    const headers = [
-      'ID',
-      'Código Empleado',
-      'Trabajador',
-      'Cargo',
-      'Hora Ingreso',
-      'Estación Ingreso',
-      'Hora Salida',
-      'Estación Salida',
-      'Horas Totales',
-      'Similitud Facial',
-      'Biometría Exitosa',
-      'Método Validación',
-      'Estado',
-    ];
-
-    const rows = attendanceLogs.map((log) => [
-      log.id,
-      log.codigo_empleado || '',
-      `"${log.nombre_usuario || ''}"`,
-      `"${log.cargo || ''}"`,
-      log.hora_ingreso ? new Date(log.hora_ingreso).toLocaleString() : '',
-      `"${log.estacion_ingreso_nombre || 'Fuera de estación'}"`,
-      log.hora_salida ? new Date(log.hora_salida).toLocaleString() : 'En curso',
-      `"${log.estacion_salida_nombre || ''}"`,
-      log.horas_totales || '',
-      log.similitud_facial !== null && log.similitud_facial !== undefined ? `${Math.round(log.similitud_facial)}%` : '',
-      log.verificacion_facial_exitosa ? 'SI' : 'NO',
-      log.metodo_validacion || 'facial_biometrico',
-      log.estado,
-    ]);
-
-    const csvContent =
-      'data:text/csv;charset=utf-8,\uFEFF' +
-      [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
-
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `SMI_Reporte_Asistencia_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   };
 
   // Create Workstation
@@ -773,7 +892,7 @@ export const AdminPage: React.FC = () => {
                   }`}
                 >
                   <FileSpreadsheet className="w-4 h-4" />
-                  <span>Historial Asistencia ({attendanceLogs.length})</span>
+                  <span>Historial Asistencia ({logsTotal})</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('workers')}
@@ -832,10 +951,11 @@ export const AdminPage: React.FC = () => {
                 {activeTab === 'logs' && (
                   <button
                     onClick={handleExportCSV}
-                    className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-sm transition"
+                    disabled={exporting}
+                    className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl shadow-sm transition"
                   >
                     <Download className="w-4 h-4" />
-                    <span>Exportar CSV</span>
+                    <span>{exporting ? 'Exportando…' : 'Exportar CSV'}</span>
                   </button>
                 )}
 
@@ -978,6 +1098,42 @@ export const AdminPage: React.FC = () => {
                             )}
 
                             {isActive && (
+                              <div className="mt-2 flex items-center justify-between gap-2">
+                                <span
+                                  className={`text-[10px] font-semibold ${
+                                    worker.push_activo ? 'text-emerald-600' : 'text-slate-400'
+                                  }`}
+                                  title={
+                                    worker.push_activo
+                                      ? 'Este trabajador activó las alertas en su celular'
+                                      : 'Todavía no activó las alertas: solo verá el mensaje si abre la app'
+                                  }
+                                >
+                                  {worker.push_activo === undefined
+                                    ? ''
+                                    : worker.push_activo
+                                    ? '🔔 Alertas activadas'
+                                    : '🔕 Sin alertas activadas'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setAlertTarget(worker);
+                                    setAlertMsg(isInside ? '' : ALERT_PRESETS[0]);
+                                  }}
+                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition active:scale-95 ${
+                                    isInside
+                                      ? 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                                      : 'bg-amber-500 text-white border-amber-600 hover:bg-amber-600 shadow-sm'
+                                  }`}
+                                >
+                                  🔔 Enviar alerta
+                                </button>
+                              </div>
+                            )}
+
+                            {isActive && (
                               <div className="mt-2 text-[11px] text-slate-500 bg-white p-2 rounded-lg border border-slate-100 flex items-center justify-between">
                                 <span className="font-medium text-slate-700">
                                   {worker.estacion_nombre ? `📍 ${worker.estacion_nombre}` : '📍 Sin estación fija'}
@@ -999,6 +1155,67 @@ export const AdminPage: React.FC = () => {
             {/* Tab 2: Attendance Logs Table */}
             {activeTab === 'logs' && (
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                {/* Filtro por fechas */}
+                <div className="flex flex-wrap items-end gap-3 p-3 border-b border-slate-100 bg-slate-50/60">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                    Desde
+                    <input
+                      type="date"
+                      value={logsDesde}
+                      max={logsHasta || undefined}
+                      onChange={(e) => {
+                        setLogsDesde(e.target.value);
+                        setLogsPage(0);
+                      }}
+                      className="block mt-1 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </label>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                    Hasta
+                    <input
+                      type="date"
+                      value={logsHasta}
+                      min={logsDesde || undefined}
+                      onChange={(e) => {
+                        setLogsHasta(e.target.value);
+                        setLogsPage(0);
+                      }}
+                      className="block mt-1 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { label: 'Hoy', dias: 0 },
+                      { label: '7 días', dias: 6 },
+                      { label: '30 días', dias: 29 },
+                    ].map((r) => (
+                      <button
+                        key={r.label}
+                        type="button"
+                        onClick={() => {
+                          setLogsDesde(toInputDate(daysAgo(r.dias)));
+                          setLogsHasta(toInputDate(new Date()));
+                          setLogsPage(0);
+                        }}
+                        className="px-2.5 py-1 text-[11px] font-bold bg-white border border-slate-300 hover:bg-blue-600 hover:border-blue-600 hover:text-white text-slate-600 rounded-lg transition"
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLogsDesde('');
+                        setLogsHasta('');
+                        setLogsPage(0);
+                      }}
+                      className="px-2.5 py-1 text-[11px] font-bold bg-white border border-slate-300 hover:bg-blue-600 hover:border-blue-600 hover:text-white text-slate-600 rounded-lg transition"
+                    >
+                      Todo
+                    </button>
+                  </div>
+                </div>
+
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs text-slate-600">
                     <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase font-semibold text-[10px] tracking-wider">
@@ -1021,7 +1238,7 @@ export const AdminPage: React.FC = () => {
                       {filteredLogs.length === 0 ? (
                         <tr>
                           <td colSpan={12} className="px-4 py-8 text-center text-slate-400">
-                            No hay registros de asistencia aún.
+                            No hay registros de asistencia en este rango.
                           </td>
                         </tr>
                       ) : (
@@ -1166,6 +1383,33 @@ export const AdminPage: React.FC = () => {
                       )}
                     </tbody>
                   </table>
+                </div>
+
+                {/* Paginación */}
+                <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 text-xs text-slate-500">
+                  <span>
+                    {logsTotal === 0
+                      ? 'Sin registros'
+                      : `Mostrando ${logsPage * LOGS_PAGE_SIZE + 1}–${Math.min((logsPage + 1) * LOGS_PAGE_SIZE, logsTotal)} de ${logsTotal}`}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={logsPage === 0}
+                      onClick={() => setLogsPage((p) => Math.max(0, p - 1))}
+                      className="px-3 py-1.5 font-bold bg-white border border-slate-300 rounded-lg disabled:opacity-40 hover:bg-slate-50 transition"
+                    >
+                      ← Anterior
+                    </button>
+                    <button
+                      type="button"
+                      disabled={(logsPage + 1) * LOGS_PAGE_SIZE >= logsTotal}
+                      onClick={() => setLogsPage((p) => p + 1)}
+                      className="px-3 py-1.5 font-bold bg-white border border-slate-300 rounded-lg disabled:opacity-40 hover:bg-slate-50 transition"
+                    >
+                      Siguiente →
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -1624,6 +1868,85 @@ export const AdminPage: React.FC = () => {
       )}
 
       {/* Modal: Vista Previa de Evidencia Fotográfica y Comparación Biométrica */}
+      {/* Ventana: enviar alerta al celular de un trabajador */}
+      {alertTarget && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="font-extrabold text-sm text-slate-900">🔔 Enviar alerta al celular</h3>
+                <p className="text-[11px] text-slate-500">
+                  {alertTarget.nombre_usuario} · {alertTarget.codigo_empleado}
+                  {alertTarget.dentro_de_estacion ? '' : ' · Fuera de zona'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAlertTarget(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3">
+              <div className="flex flex-wrap gap-1.5">
+                {ALERT_PRESETS.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setAlertMsg(p)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border text-left transition ${
+                      alertMsg === p
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-slate-50 text-slate-600 border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Mensaje:</label>
+                <textarea
+                  value={alertMsg}
+                  onChange={(e) => setAlertMsg(e.target.value.slice(0, 200))}
+                  rows={3}
+                  placeholder="Escribe el aviso para el trabajador…"
+                  className="w-full p-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none resize-none"
+                />
+                <p className="text-[10px] text-slate-400 text-right">{alertMsg.length}/200</p>
+              </div>
+
+              {alertTarget.push_activo === 0 || alertTarget.push_activo === false ? (
+                <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                  Este trabajador todavía no activó las alertas en su celular: solo verá el mensaje si abre la app.
+                </p>
+              ) : null}
+
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setAlertTarget(null)}
+                  className="py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSendAlert}
+                  disabled={alertSending || !alertMsg.trim()}
+                  className="py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow transition"
+                >
+                  {alertSending ? 'Enviando…' : 'Enviar alerta'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {photoPreview && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-2xl w-full overflow-hidden shadow-2xl">

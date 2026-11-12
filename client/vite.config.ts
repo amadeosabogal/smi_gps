@@ -15,6 +15,8 @@ export default defineConfig({
         // El wasm de MediaPipe (~14 MB) y los modelos son demasiado grandes para el precaché inicial:
         // se cachean en la primera carga (CacheFirst) y luego funcionan sin conexión.
         globIgnores: ['mediapipe/**', 'models/**'],
+        // Eventos push/notificationclick: las alertas llegan con la app cerrada y la pantalla apagada
+        importScripts: ['push-sw.js'],
         runtimeCaching: [
           {
             urlPattern: ({ url }: { url: URL }) =>

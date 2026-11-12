@@ -74,6 +74,7 @@ export interface DatosTrabajadorEnVivo {
   asistencia_id: number | null;
   hora_ingreso: string | null;
   tiene_foto_ingreso?: boolean;
+  push_activo?: boolean | number; // ¿tiene las alertas activadas en su celular?
   estado_asistencia: 'activo' | null;
   latitud: number | null;
   longitud: number | null;
