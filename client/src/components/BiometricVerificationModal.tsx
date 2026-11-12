@@ -41,6 +41,9 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
   const [blinkPhase, setBlinkPhase] = useState<BlinkPhase | 'no_face'>('calibrating');
   const [livenessTimedOut, setLivenessTimedOut] = useState<boolean>(false);
   const [livenessDebug, setLivenessDebug] = useState<string>('');
+  const [blinkModuleState, setBlinkModuleState] = useState<'loading' | 'ready' | 'error'>(
+    eyeBlinkService.isReady() ? 'ready' : 'loading'
+  );
   const [similarityScore, setSimilarityScore] = useState<number>(0);
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -95,7 +98,11 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
     try {
       // Iniciar cámara y cargar modelos en paralelo para máxima velocidad
-      const [mediaStream, , blinkModuleOk] = await Promise.all([
+      // El módulo de prueba de vida (wasm pesado) se descarga en segundo plano y NO bloquea la cámara
+      setBlinkModuleState(eyeBlinkService.isReady() ? 'ready' : 'loading');
+      eyeBlinkService.load().then((ok) => setBlinkModuleState(ok ? 'ready' : 'error'));
+
+      const [mediaStream] = await Promise.all([
         navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
@@ -105,16 +112,9 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
           audio: false,
         }),
         faceRecognitionService.loadModels(),
-        eyeBlinkService.load(),
       ]);
 
       streamRef.current = mediaStream;
-      if (!blinkModuleOk) {
-        stopCamera();
-        setErrorMessage('No se pudo cargar el módulo de prueba de vida. Recarga la página.');
-        setStatusMessage('Error de prueba de vida');
-        return;
-      }
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
         videoRef.current.onloadedmetadata = () => {
@@ -200,7 +200,9 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
     try {
       // 2. Extraer descriptor biométrico DIRECTAMENTE de la textura de video activa (máxima velocidad WebGL)
+      const tStart = performance.now();
       const detection = await faceRecognitionService.detectFullFace(video);
+      const tDescriptor = performance.now() - tStart;
 
       if (!detection) {
         setStep('no_face');
@@ -240,7 +242,11 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
       // 5. Caso B: el SERVIDOR compara contra el rostro enrolado (el navegador ya no conoce ese descriptor)
       setStatusMessage('Verificando identidad...');
+      const tServer = performance.now();
       const result = await api.verifyFace(liveDescriptor, snapshot, tipo);
+      console.info(
+        `⏱️ [BIOMETRÍA] descriptor facial: ${Math.round(tDescriptor)} ms · verificación en servidor: ${Math.round(performance.now() - tServer)} ms`
+      );
       setSimilarityScore(result.similarity);
 
       if (result.isMatch) {
@@ -265,7 +271,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
   // Prueba de vida: el usuario debe parpadear. Al detectarlo se dispara la captura y validación.
   useEffect(() => {
-    if (!isOpen || !cameraReady || step !== 'ready' || livenessTimedOut) return;
+    if (!isOpen || !cameraReady || step !== 'ready' || livenessTimedOut || blinkModuleState !== 'ready') return;
 
     let cancelled = false;
     // Se alimenta con "apertura" = 1 - cierre (blendshape): ~0.9 abierto, <0.5 cerrado
@@ -330,10 +336,14 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     return () => {
       cancelled = true;
     };
-  }, [isOpen, cameraReady, step, livenessTimedOut]);
+  }, [isOpen, cameraReady, step, livenessTimedOut, blinkModuleState]);
 
   const livenessHint =
-    livenessTimedOut
+    blinkModuleState === 'loading'
+      ? 'Preparando verificación de vida… (la primera vez puede tardar un poco)'
+      : blinkModuleState === 'error'
+      ? 'No se pudo cargar la verificación de vida. Recarga la página e intenta de nuevo.'
+      : livenessTimedOut
       ? 'No se detectó parpadeo. Presiona "Reintentar" y parpadea mirando a la cámara.'
       : blinkPhase === 'no_face'
       ? 'No se ve tu rostro. Colócalo dentro del círculo.'
@@ -495,6 +505,10 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
                   ? errorMessage
                     ? 'Cámara no disponible'
                     : 'Iniciando cámara...'
+                  : blinkModuleState === 'loading'
+                  ? 'Preparando verificación...'
+                  : blinkModuleState === 'error'
+                  ? 'Verificación no disponible'
                   : livenessTimedOut
                   ? 'Tiempo agotado'
                   : 'Esperando parpadeo...'}

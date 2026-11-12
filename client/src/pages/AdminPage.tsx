@@ -329,6 +329,23 @@ export const AdminPage: React.FC = () => {
     return () => window.removeEventListener('smi:unauthorized', onUnauthorized);
   }, []);
 
+  // Con una sesión guardada, confirmar que de verdad es de administrador/supervisor
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+    api
+      .getMe()
+      .then((me) => {
+        if (me.rol !== 'administrador' && me.rol !== 'supervisor') {
+          api.logout();
+          disconnectSocket();
+          setIsAdminAuthenticated(false);
+        }
+      })
+      .catch(() => {
+        /* si la sesión venció, el listener de 401 vuelve al formulario */
+      });
+  }, [isAdminAuthenticated]);
+
   // Filter active workers for map
   const activeWorkers = liveWorkers.filter((w) => w.estado_asistencia === 'activo');
 

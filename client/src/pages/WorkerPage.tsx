@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { BiometricVerificationModal } from '../components/BiometricVerificationModal';
 import { faceRecognitionService } from '../services/faceRecognition';
+import { eyeBlinkService } from '../services/eyeBlink';
 
 export const WorkerPage: React.FC = () => {
   const [workers, setWorkers] = useState<Usuario[]>([]);
@@ -255,6 +256,8 @@ export const WorkerPage: React.FC = () => {
   useEffect(() => {
     if (isAuthenticated) {
       checkGpsStatus();
+      // Descarga en segundo plano el módulo de parpadeo para que el modal abra sin esperas
+      eyeBlinkService.load();
     }
   }, [isAuthenticated, checkGpsStatus]);
 

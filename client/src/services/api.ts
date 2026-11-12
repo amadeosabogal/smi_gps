@@ -21,26 +21,34 @@ const getApiBase = () => {
 };
 
 // ---------- Sesión ----------
-const TOKEN_KEY = 'smi_token';
+// La app de trabajador (/) y la consola de administración (/admin) usan sesiones SEPARADAS:
+// así una sesión de trabajador nunca se interpreta como sesión de administrador (ni al revés).
+const LEGACY_TOKEN_KEY = 'smi_token';
+const tokenKey = () =>
+  typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')
+    ? 'smi_token_admin'
+    : 'smi_token_worker';
 
 export const auth = {
   getToken(): string | null {
     try {
-      return localStorage.getItem(TOKEN_KEY);
+      return localStorage.getItem(tokenKey());
     } catch {
       return null;
     }
   },
   setToken(token: string) {
     try {
-      localStorage.setItem(TOKEN_KEY, token);
+      localStorage.setItem(tokenKey(), token);
+      localStorage.removeItem(LEGACY_TOKEN_KEY);
     } catch {
       /* almacenamiento no disponible */
     }
   },
   clear() {
     try {
-      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(tokenKey());
+      localStorage.removeItem(LEGACY_TOKEN_KEY);
     } catch {
       /* almacenamiento no disponible */
     }
