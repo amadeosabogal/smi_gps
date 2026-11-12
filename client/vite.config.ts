@@ -9,7 +9,8 @@ export default defineConfig({
     react(),
     basicSsl(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt': la actualización no se aplica sola; <UpdatePrompt /> avisa y la persona decide cuándo
+      registerType: 'prompt',
       includeAssets: ['favicon.ico', 'favicon-32.png', 'apple-touch-icon.png', 'logo-blanco.png', 'logo-azul.png'],
       workbox: {
         // El wasm de MediaPipe (~14 MB) y los modelos son demasiado grandes para el precaché inicial:
@@ -17,6 +18,7 @@ export default defineConfig({
         globIgnores: ['mediapipe/**', 'models/**'],
         // Eventos push/notificationclick: las alertas llegan con la app cerrada y la pantalla apagada
         importScripts: ['push-sw.js'],
+        clientsClaim: true,
         runtimeCaching: [
           {
             urlPattern: ({ url }: { url: URL }) =>

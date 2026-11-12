@@ -1,10 +1,12 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { WorkerPage } from './pages/WorkerPage';
 import { AdminPage } from './pages/AdminPage';
+import { UpdatePrompt } from './components/UpdatePrompt';
 
 export function App() {
   return (
     <BrowserRouter>
+      <UpdatePrompt />
       <Routes>
         {/* Ruta principal: Aplicación Móvil del Trabajador (PWA / Reloj Marcador) */}
         <Route path="/" element={<WorkerPage />} />

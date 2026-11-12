@@ -3,26 +3,13 @@ import { Camera, CheckCircle, AlertCircle, X, RefreshCw, Upload } from 'lucide-r
 import { faceRecognitionService } from '../services/faceRecognition';
 import { api } from '../services/api';
 import type { Usuario } from '../types';
+import { PhotoFramer, type PhotoFramerHandle } from './PhotoFramer';
 
 interface EnrolFaceModalProps {
   isOpen: boolean;
   onClose: () => void;
   worker: Usuario;
   onEnrolSuccess: () => void;
-}
-
-// Lado máximo de la foto de referencia: suficiente para reconocer el rostro y mucho más liviana
-const LADO_MAXIMO = 1024;
-
-function reducirImagen(img: HTMLImageElement): string {
-  const escala = Math.min(1, LADO_MAXIMO / Math.max(img.naturalWidth, img.naturalHeight));
-  const ancho = Math.max(1, Math.round(img.naturalWidth * escala));
-  const alto = Math.max(1, Math.round(img.naturalHeight * escala));
-  const canvas = document.createElement('canvas');
-  canvas.width = ancho;
-  canvas.height = alto;
-  canvas.getContext('2d')!.drawImage(img, 0, 0, ancho, alto);
-  return canvas.toDataURL('image/jpeg', 0.88);
 }
 
 export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
@@ -35,6 +22,7 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const framerRef = useRef<PhotoFramerHandle | null>(null);
 
   const [mode, setMode] = useState<'camera' | 'upload'>('camera');
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
@@ -116,6 +104,7 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
         }
       };
       reader.readAsDataURL(file);
+      e.target.value = ''; // permite volver a elegir el mismo archivo
     }
   };
 
@@ -126,16 +115,11 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
     setErrorMsg(null);
 
     try {
-      // 1. Cargar la imagen en un elemento HTML
-      const original = new Image();
-      original.src = photoPreview;
-      await new Promise((resolve, reject) => {
-        original.onload = resolve;
-        original.onerror = () => reject(new Error('No se pudo leer la imagen. Use un archivo JPG, PNG o WebP.'));
-      });
+      // 1. Foto con el encuadre elegido (lo que se ve dentro del visor), ya reducida a un tamaño razonable
+      const foto = framerRef.current?.getCropped();
+      if (!foto) throw new Error('No se pudo leer la imagen. Use un archivo JPG, PNG o WebP.');
 
-      // 2. Reducir la foto (una fotografía de cámara puede pesar varios MB) y extraer el descriptor facial de ella
-      const foto = reducirImagen(original);
+      // 2. Extraer el descriptor facial de esa foto
       const img = new Image();
       img.src = foto;
       await new Promise((resolve, reject) => {
@@ -189,27 +173,28 @@ export const EnrolFaceModal: React.FC<EnrolFaceModalProps> = ({
           </button>
         </div>
 
-        {/* Visor o previsualización */}
-        <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden bg-slate-900">
-          {photoPreview ? (
-            <img src={photoPreview} alt="Foto oficial" className="h-full w-full object-cover" />
-          ) : mode === 'camera' ? (
-            <>
-              <video ref={videoRef} autoPlay playsInline muted className="h-full w-full scale-x-[-1] object-cover" />
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                <div className="h-[78%] w-[52%] border-2 border-white/90" />
+        {/* Foto con editor de encuadre, o cámara / selector de archivo */}
+        {photoPreview ? (
+          <PhotoFramer ref={framerRef} src={photoPreview} />
+        ) : (
+          <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden bg-slate-900">
+            {mode === 'camera' ? (
+              <>
+                <video ref={videoRef} autoPlay playsInline muted className="h-full w-full scale-x-[-1] object-cover" />
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                  <div className="h-[78%] w-[52%] border-2 border-white/90" />
+                </div>
+              </>
+            ) : (
+              <div className="p-6 text-center text-slate-300">
+                <Upload className="mx-auto mb-2 h-10 w-10 text-slate-400" />
+                <p className="text-sm">Seleccione una fotografía clara del rostro del trabajador</p>
               </div>
-            </>
-          ) : (
-            <div className="p-6 text-center text-slate-300">
-              <Upload className="mx-auto mb-2 h-10 w-10 text-slate-400" />
-              <p className="text-sm">Seleccione una fotografía clara del rostro del trabajador</p>
-            </div>
-          )}
-
-          <canvas ref={canvasRef} className="hidden" />
-          <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
-        </div>
+            )}
+          </div>
+        )}
+        <canvas ref={canvasRef} className="hidden" />
+        <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
 
         {/* Mensajes */}
         {errorMsg && (
