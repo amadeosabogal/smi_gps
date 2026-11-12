@@ -35,6 +35,30 @@ import {
   UserCheck,
 } from 'lucide-react';
 
+// Formatea milisegundos como HH:MM:SS (las horas pueden pasar de 24)
+const formatElapsed = (ms: number) => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+};
+
+// Contador en vivo del tiempo que lleva un trabajador en turno.
+// offsetMs corrige la diferencia entre el reloj de este equipo y el del servidor.
+const ElapsedTimer: React.FC<{ since: string; offsetMs: number }> = ({ since, offsetMs }) => {
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <span className="font-mono font-extrabold text-sm text-blue-700 tabular-nums">
+      {formatElapsed(now + offsetMs - new Date(since).getTime())}
+    </span>
+  );
+};
+
 export const AdminPage: React.FC = () => {
   // Authentication state for admin
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => Boolean(auth.getToken()));
@@ -46,6 +70,7 @@ export const AdminPage: React.FC = () => {
   const [workstations, setWorkstations] = useState<EstacionTrabajo[]>([]);
   const [attendanceLogs, setAttendanceLogs] = useState<RegistroAsistencia[]>([]);
   const [liveWorkers, setLiveWorkers] = useState<DatosTrabajadorEnVivo[]>([]);
+  const [clockOffsetMs, setClockOffsetMs] = useState<number>(0); // reloj del servidor - reloj de este equipo
   const [workersList, setWorkersList] = useState<Usuario[]>([]);
   const [fraudLogs, setFraudLogs] = useState<AuditoriaFraudeFacial[]>([]);
   const [summary, setSummary] = useState<ResumenDashboard>({
@@ -184,6 +209,7 @@ export const AdminPage: React.FC = () => {
       setWorkstations(stationsData);
       setAttendanceLogs(logsData);
       setLiveWorkers(liveData.trabajadores);
+      if (liveData.ahora) setClockOffsetMs(new Date(liveData.ahora).getTime() - Date.now());
       setSummary(liveData.resumen);
       setWorkersList(usersData);
       setFraudLogs(fraudData);
@@ -890,6 +916,21 @@ export const AdminPage: React.FC = () => {
                                 </span>
                               )}
                             </div>
+
+                            {isActive && worker.hora_ingreso && (
+                              <div className="mt-2 flex items-center justify-between bg-blue-50 border border-blue-100 rounded-lg px-2.5 py-1.5">
+                                <div className="flex flex-col leading-tight">
+                                  <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wide">
+                                    ⏱ Tiempo en turno
+                                  </span>
+                                  <span className="text-[10px] text-slate-500">
+                                    Ingresó a las{' '}
+                                    {new Date(worker.hora_ingreso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
+                                </div>
+                                <ElapsedTimer since={worker.hora_ingreso} offsetMs={clockOffsetMs} />
+                              </div>
+                            )}
 
                             {isActive && (
                               <div className="mt-2 text-[11px] text-slate-500 bg-white p-2 rounded-lg border border-slate-100 flex items-center justify-between">

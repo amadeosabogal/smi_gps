@@ -678,7 +678,11 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
     const activos = trabajadores.filter((w) => w.estado_asistencia === 'activo');
     const dentro = activos.filter((w) => w.dentro_de_estacion).length;
 
+    // Hora actual del servidor de base de datos: referencia para calcular el tiempo en turno
+    const reloj = await p.request().query('SELECT GETDATE() AS ahora');
+
     res.json({
+      ahora: reloj.recordset[0].ahora,
       resumen: {
         totalTrabajadores: trabajadores.length,
         activosConteo: activos.length,

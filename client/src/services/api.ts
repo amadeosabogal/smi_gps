@@ -176,7 +176,7 @@ export const api = {
   },
 
   // ----- Resumen en Vivo -----
-  async getLiveDashboard(): Promise<{ resumen: ResumenDashboard; trabajadores: DatosTrabajadorEnVivo[] }> {
+  async getLiveDashboard(): Promise<{ ahora?: string; resumen: ResumenDashboard; trabajadores: DatosTrabajadorEnVivo[] }> {
     return request('/dashboard/live');
   },
 
