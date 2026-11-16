@@ -21,6 +21,7 @@ Copia `service/.env.example` a `service/.env` y completa los valores. **Nunca su
 | `FACE_MATCH_THRESHOLD` | Umbral de coincidencia facial (0.58 por defecto; más bajo = más estricto) |
 | `ALLOW_SELF_ENROL=false` | Opcional: obliga a que solo un administrador enrole rostros |
 | `LOGIN_IP_MAX` | Intentos de login **fallidos** permitidos por IP cada 10 min (60 por defecto). Toda una planta suele compartir IP, así que debe ser alto; cada cuenta se protege aparte (8 fallos / 15 min) |
+| `GPS_MAX_ACCURACY_CHECKIN_M`, `GPS_MAX_ACCURACY_PING_M` | Precisión GPS exigida en metros para marcar entrada (50) y para los puntos durante el turno (100). Una ubicación aproximada como ±2000 m se rechaza |
 | `RETENCION_UBICACIONES_DIAS` | Opcional. Días que se conservan los **puntos GPS del recorrido** (mínimo 7). Vacío = no borrar nunca. No afecta a la asistencia ni a las fotos |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Claves de las **notificaciones push** (alertas al celular). Se generan con `npm run vapid`. La privada es un secreto; usa una pareja distinta en producción |
 
@@ -102,6 +103,11 @@ Límites que conviene saber:
 - Algunos fabricantes de Android (Xiaomi, Huawei, Oppo…) y el "ahorro de batería" pueden retrasar o bloquear notificaciones de apps en segundo plano. Se arregla en Ajustes → Batería → permitir sin restricciones, o dejando la app instalada.
 - Si el trabajador desactiva las notificaciones o desinstala la app, el servidor lo detecta en el siguiente envío y elimina esa suscripción.
 - Para entrega garantizada tipo WhatsApp (alta prioridad nativa) haría falta una app nativa con Firebase; el proyecto ya incluye Capacitor por si se quiere dar ese paso.
+
+### Precisión y continuidad del GPS
+- **Entrada:** exige una ubicación fresca y precisa (±50 m o menos por defecto). La app espera hasta 15 s a que el GPS mejore y, si no llega a esa precisión, no deja marcar y explica cómo mejorarla. El servidor lo verifica aparte, así que no se puede saltar. Si el rechazo es por el GPS, el ticket facial no se consume.
+- **Durante el turno:** los puntos con precisión peor a ±100 m se descartan (no se guardan) y el trabajador ve el aviso. En el panel se ve la antigüedad de la última señal ("Sin señal GPS desde hace N min") y los trabajadores con GPS impreciso.
+- **Límite de las aplicaciones web (PWA):** el navegador **deja de entregar el GPS cuando la pantalla se apaga o la app pasa a segundo plano**. La app mantiene la pantalla encendida durante el turno y avisa al trabajador, pero si bloquea el teléfono o cambia de aplicación el seguimiento se detiene (en iPhone es más estricto). Para seguimiento continuo en un vehículo hace falta una app nativa con servicio en segundo plano (el proyecto ya incluye Capacitor).
 
 ## 5. Qué protege el sistema
 - Los PIN se guardan con hash (scrypt); el login se bloquea tras varios intentos fallidos.

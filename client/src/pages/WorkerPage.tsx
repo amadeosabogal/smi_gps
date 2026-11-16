@@ -23,6 +23,15 @@ export const WorkerPage: React.FC = () => {
   const [loginLoading, setLoginLoading] = useState<boolean>(false);
   const [alertaActiva, setAlertaActiva] = useState<{ id: number | null; mensaje: string } | null>(null);
 
+  // Precisión GPS exigida por el servidor y estado de la señal
+  const [gpsCfg, setGpsCfg] = useState({ maxPrecisionCheckin: 50, maxPrecisionPing: 100, maxAgeMs: 30000 });
+  const gpsCfgRef = useRef(gpsCfg);
+  gpsCfgRef.current = gpsCfg;
+  const [gpsBuscando, setGpsBuscando] = useState<boolean>(false);
+  const [gpsMensaje, setGpsMensaje] = useState<string>('');
+  const [gpsImprecisa, setGpsImprecisa] = useState<number | null>(null); // precisión actual (m) si es insuficiente
+  const [wakeLockActivo, setWakeLockActivo] = useState<boolean>(false);
+
   // Shift & tracking state
   const [isActiveShift, setIsActiveShift] = useState<boolean>(false);
   const [shiftSeconds, setShiftSeconds] = useState<number>(0);
@@ -193,6 +202,12 @@ export const WorkerPage: React.FC = () => {
           const toca = elapsed >= 15_000 || (moved >= 25 && elapsed >= 5_000);
           if (!toca) return;
         }
+        // Un punto impreciso no se envía: dejaría al trabajador "ubicado" donde no está
+        if (coords.accuracy > gpsCfgRef.current.maxPrecisionPing) {
+          setGpsImprecisa(Math.round(coords.accuracy));
+          return;
+        }
+        setGpsImprecisa(null);
         lastPingRef.current = { t: now, lat: coords.latitude, lng: coords.longitude };
 
         try {
@@ -200,8 +215,10 @@ export const WorkerPage: React.FC = () => {
             usuarioId,
             coords.latitude,
             coords.longitude,
-            coords.accuracy
+            coords.accuracy,
+            Date.now() - coords.timestamp
           );
+          if (res.imprecisa) setGpsImprecisa(res.precision);
           if (res.geocerca) {
             setIsInsideStation(res.geocerca.dentroDeEstacion);
             setDetectedStation(res.geocerca.estacion);
@@ -275,6 +292,67 @@ export const WorkerPage: React.FC = () => {
       console.error('Error comprobando estado de GPS:', err);
     }
   }, []);
+
+  // Precisión GPS que exige el servidor
+  useEffect(() => {
+    if (isAuthenticated) api.getGpsConfig().then(setGpsCfg).catch(() => {});
+  }, [isAuthenticated]);
+
+  // Durante el turno: mantener la pantalla encendida (el navegador deja de entregar el GPS con la pantalla
+  // apagada o la app en segundo plano) y reportar la posición al instante cuando se vuelve a la app.
+  useEffect(() => {
+    if (!isActiveShift || !selectedUser) return;
+    const usuarioId = selectedUser.id;
+    let lock: WakeLockSentinel | null = null;
+
+    const mantenerPantalla = async () => {
+      try {
+        if ('wakeLock' in navigator && document.visibilityState === 'visible') {
+          lock = await navigator.wakeLock.request('screen');
+          setWakeLockActivo(true);
+          lock.addEventListener('release', () => setWakeLockActivo(false));
+        }
+      } catch {
+        setWakeLockActivo(false);
+      }
+    };
+
+    const reportarAhora = async () => {
+      try {
+        const r = await geolocationService.getPrecisePosition({ maxAccuracy: gpsCfgRef.current.maxPrecisionPing, waitMs: 8000 });
+        setCurrentCoords(r.coords);
+        if (!r.precise) {
+          setGpsImprecisa(Math.round(r.coords.accuracy));
+          return;
+        }
+        setGpsImprecisa(null);
+        lastPingRef.current = { t: Date.now(), lat: r.coords.latitude, lng: r.coords.longitude };
+        const res = await api.sendLocationPing(usuarioId, r.coords.latitude, r.coords.longitude, r.coords.accuracy, Date.now() - r.coords.timestamp);
+        if (res.geocerca) {
+          setIsInsideStation(res.geocerca.dentroDeEstacion);
+          setDetectedStation(res.geocerca.estacion);
+          setDistanceToNearest(res.geocerca.distanciaMetros);
+        }
+      } catch {
+        /* sin señal por ahora: el seguimiento normal lo intentará de nuevo */
+      }
+    };
+
+    const alVolver = () => {
+      if (document.visibilityState === 'visible') {
+        mantenerPantalla();
+        reportarAhora();
+      }
+    };
+
+    mantenerPantalla();
+    document.addEventListener('visibilitychange', alVolver);
+    return () => {
+      document.removeEventListener('visibilitychange', alVolver);
+      lock?.release().catch(() => {});
+      setWakeLockActivo(false);
+    };
+  }, [isActiveShift, selectedUser]);
 
   // Recepción de alertas: por el socket (app abierta), por el service worker (app visible) o al tocar la notificación
   useEffect(() => {
@@ -353,30 +431,76 @@ export const WorkerPage: React.FC = () => {
     }
   }, [isCameraOpen]);
 
+  // Antes de abrir la cámara para marcar ENTRADA se consigue una ubicación precisa; así el trabajador no
+  // hace la verificación facial para descubrir después que el GPS no servía.
+  const prepararUbicacionPrecisa = async (): Promise<boolean> => {
+    const maxPrec = gpsCfgRef.current.maxPrecisionCheckin;
+    setGpsBuscando(true);
+    setGpsMensaje('Obteniendo ubicación precisa…');
+    try {
+      const r = await geolocationService.getPrecisePosition({
+        maxAccuracy: maxPrec,
+        waitMs: 15000,
+        onProgress: (a) => setGpsMensaje(`Obteniendo ubicación precisa… (±${Math.round(a)} m)`),
+      });
+      setCurrentCoords(r.coords);
+      setGpsPermissionStatus('granted');
+      setGpsErrorMsg(null);
+      if (!r.precise) {
+        alert(
+          `Su ubicación no es lo bastante precisa (±${Math.round(r.coords.accuracy)} m). Se requiere ±${maxPrec} m o menos.\n\n` +
+            '• Active la ubicación de alta precisión (Android: Ajustes → Ubicación).\n' +
+            '• Permita la ubicación "precisa" para el navegador, no la "aproximada".\n' +
+            '• Salga a un lugar abierto, lejos de techos y paredes.\n\nLuego intente de nuevo.'
+        );
+        return false;
+      }
+      return true;
+    } catch (err: any) {
+      alert(err.message || 'No se pudo obtener la ubicación GPS.');
+      return false;
+    } finally {
+      setGpsBuscando(false);
+    }
+  };
+
+  const iniciarMarcacion = async (tipo: 'entrada' | 'salida') => {
+    if (gpsBuscando) return;
+    setCameraTipo(tipo);
+    if (tipo === 'entrada' && !(await prepararUbicacionPrecisa())) return;
+    setIsCameraOpen(true);
+  };
+
   // Handle Check-In con Reconocimiento Facial Biométrico y GPS Real
-  const handleCheckInWithPhoto = async (fotoBase64: string, similarity = 100, isVerified = true) => {
+  const handleCheckInWithPhoto = async (fotoBase64: string, similarity = 100) => {
     if (!selectedUser) return;
     setActionLoading(true);
 
     try {
-      // Usar coordenadas disponibles de inmediato (0ms de retraso si ya están en memoria)
-      let pos: CoordsData | null = currentCoords || geolocationService.getLastKnownCoords();
-
-      if (!pos) {
-        try {
-          pos = await geolocationService.getCurrentPosition({ allowCached: true, maxWaitMs: 3000 });
-          setCurrentCoords(pos);
-          setGpsPermissionStatus('granted');
-          setGpsErrorMsg(null);
-        } catch (gpsErr: any) {
-          setActionLoading(false);
-          const msg = gpsErr.message || 'No se pudo obtener la ubicación GPS de su celular.';
-          alert(
-            `UBICACIÓN GPS REQUERIDA:\n\n${msg}\n\nPara registrar su asistencia es obligatorio activar la ubicación GPS en su celular y conceder los permisos en su navegador.`
-          );
-          return;
-        }
+      // Lectura GPS fresca justo antes de registrar (la verificación facial tardó unos segundos).
+      // Nunca se usa una posición vieja: en un vehículo una posición de hace un minuto está a ~1 km.
+      const maxPrec = gpsCfgRef.current.maxPrecisionCheckin;
+      let pos: CoordsData | null = null;
+      try {
+        const lectura = await geolocationService.getPrecisePosition({ maxAccuracy: maxPrec, waitMs: 6000 });
+        if (lectura.precise) pos = lectura.coords;
+      } catch {
+        /* se prueba con la lectura de la verificación previa */
       }
+      if (!pos && currentCoords && currentCoords.accuracy <= maxPrec && Date.now() - currentCoords.timestamp <= 45000) {
+        pos = currentCoords;
+      }
+      if (!pos) {
+        setActionLoading(false);
+        alert(
+          `Su ubicación no es lo bastante precisa. Se requiere ±${maxPrec} m o menos.\n\n` +
+            '• Active la ubicación de alta precisión en su celular.\n' +
+            '• Permita la ubicación "precisa" para el navegador.\n' +
+            '• Salga a un lugar abierto, lejos de techos y paredes.\n\nLuego intente de nuevo.'
+        );
+        return;
+      }
+      setCurrentCoords(pos);
 
       const res = await api.checkIn(
         selectedUser.id,
@@ -384,9 +508,7 @@ export const WorkerPage: React.FC = () => {
         pos.longitude,
         pos.accuracy,
         fotoBase64,
-        similarity,
-        isVerified,
-        'facial_biometrico'
+        Date.now() - pos.timestamp
       );
 
       setIsCameraOpen(false);
@@ -681,10 +803,7 @@ export const WorkerPage: React.FC = () => {
             <div className="px-4 pb-4">
               {isActiveShift ? (
                 <button
-                  onClick={() => {
-                    setCameraTipo('salida');
-                    setIsCameraOpen(true);
-                  }}
+                  onClick={() => iniciarMarcacion('salida')}
                   disabled={actionLoading}
                   className="btn-danger w-full py-3.5 text-base"
                 >
@@ -699,15 +818,17 @@ export const WorkerPage: React.FC = () => {
                 </button>
               ) : (
                 <button
-                  onClick={() => {
-                    setCameraTipo('entrada');
-                    setIsCameraOpen(true);
-                  }}
-                  disabled={actionLoading}
+                  onClick={() => iniciarMarcacion('entrada')}
+                  disabled={actionLoading || gpsBuscando}
                   className="btn-primary w-full py-3.5 text-base"
                 >
                   {actionLoading ? (
                     <RefreshCw className="h-5 w-5 animate-spin" />
+                  ) : gpsBuscando ? (
+                    <>
+                      <RefreshCw className="h-5 w-5 animate-spin" />
+                      {gpsMensaje}
+                    </>
                   ) : (
                     <>
                       <ScanFace className="h-5 w-5" />
@@ -734,6 +855,25 @@ export const WorkerPage: React.FC = () => {
           {/* Estación y ubicación (solo con turno activo) */}
           {isActiveShift && (
             <div className="space-y-4">
+              {gpsImprecisa !== null && (
+                <section className="panel border-l-4 border-l-red-700 p-4">
+                  <h3 className="text-sm font-semibold text-red-800">Señal GPS imprecisa (±{gpsImprecisa} m)</h3>
+                  <p className="mt-0.5 text-sm text-slate-700">
+                    Su ubicación no se está registrando. Salga a un lugar abierto o active la ubicación de alta precisión
+                    en su celular.
+                  </p>
+                </section>
+              )}
+
+              <section className="panel border-l-4 border-l-amber-600 p-4">
+                <h3 className="text-sm font-semibold text-slate-900">Mantenga esta aplicación abierta</h3>
+                <p className="mt-0.5 text-sm text-slate-600">
+                  Para que su ubicación se actualice, deje esta pantalla abierta y encendida
+                  {wakeLockActivo ? ' (la pantalla no se apagará sola mientras esta aplicación esté abierta)' : ''}. Si bloquea
+                  el teléfono o cambia de aplicación, el seguimiento se detiene.
+                </p>
+              </section>
+
               <section
                 className={`panel flex items-start gap-3 border-l-4 p-4 ${
                   isInsideStation ? 'border-l-green-700' : 'border-l-amber-600'
@@ -812,7 +952,7 @@ export const WorkerPage: React.FC = () => {
           onVerificationSuccess={(result) => {
             setIsCameraOpen(false);
             if (cameraTipo === 'entrada') {
-              handleCheckInWithPhoto(result.photoBase64, result.similarity, result.isVerified);
+              handleCheckInWithPhoto(result.photoBase64, result.similarity);
             } else {
               handleCheckOutWithPhoto(result.photoBase64, result.similarity, result.isVerified);
             }

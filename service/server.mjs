@@ -222,6 +222,7 @@ const esTurnoDuplicado = (err) => err && (err.number === 2601 || err.number === 
 const PING_MIN_GAP_MS = 5_000;      // como mínimo 5 s entre puntos guardados...
 const PING_MIN_MOVE_METERS = 10;    // ...salvo que se haya movido más de 10 m
 const lastPings = new Map();        // usuarioId -> { t, lat, lng, geo }
+const gpsImprecisos = new Map();    // usuarioId -> { t, precision } (último punto descartado por impreciso)
 
 // Emitir solo a administradores/supervisores conectados
 const emitStaff = (event, payload) => io.to('staff').emit(event, payload);
@@ -731,6 +732,7 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
         ${pushTablasListas ? 'CASE WHEN EXISTS (SELECT 1 FROM SuscripcionesPush sp WHERE sp.usuario_id = u.id) THEN 1 ELSE 0 END AS push_activo,' : ''}
         a.id as asistencia_id, a.hora_ingreso, CASE WHEN a.foto_ingreso_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_ingreso, a.estado as estado_asistencia,
         uv.latitud, uv.longitud, uv.precision, uv.ultimo_ping, uv.dentro_de_estacion,
+        DATEDIFF(SECOND, uv.ultimo_ping, GETDATE()) AS segundos_sin_ping,
         e.id as estacion_id, e.nombre as estacion_nombre, e.codigo as estacion_codigo, e.color as estacion_color
       FROM Usuarios u
       LEFT JOIN RegistroAsistencia a ON u.id = a.usuario_id AND a.estado = 'activo'
@@ -740,7 +742,11 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
       ORDER BY a.hora_ingreso DESC, u.nombre ASC;
     `);
 
-    const trabajadores = result.recordset;
+    const ahoraMs = Date.now();
+    const trabajadores = result.recordset.map((w) => {
+      const imp = gpsImprecisos.get(w.usuario_id);
+      return { ...w, gps_imprecisa: Boolean(imp && ahoraMs - imp.t < 60_000) };
+    });
     const activos = trabajadores.filter((w) => w.estado_asistencia === 'activo');
     const dentro = activos.filter((w) => w.dentro_de_estacion).length;
 
@@ -783,11 +789,23 @@ app.get('/api/me/shift', requireAuth(ROLES_WORKER), async (req, res) => {
 
 app.post('/api/attendance/check-in', requireAuth(ROLES_WORKER), async (req, res) => {
   try {
-    const { latitud, longitud, precision, fotoIngreso, ticket } = req.body || {};
+    const { latitud, longitud, precision, fotoIngreso, ticket, antiguedadMs } = req.body || {};
     const usuarioId = req.user.id;
 
     if (!validCoords(latitud, longitud)) {
       return res.status(400).json({ error: 'latitud y longitud válidas son requeridas' });
+    }
+    if (!isNum(precision) || precision <= 0 || precision > config.gpsMaxPrecisionCheckin) {
+      return res.status(400).json({
+        codigo: 'GPS_IMPRECISO',
+        error: `Su ubicación no es lo bastante precisa (${isNum(precision) ? `±${Math.round(precision)} m` : 'sin dato'}). Se requiere ±${config.gpsMaxPrecisionCheckin} m o menos: active la ubicación de alta precisión, permita la ubicación "precisa" al navegador y salga a un lugar abierto.`,
+      });
+    }
+    if (isNum(antiguedadMs) && antiguedadMs > config.gpsMaxAgeMs) {
+      return res.status(400).json({
+        codigo: 'GPS_DESACTUALIZADO',
+        error: 'La ubicación está desactualizada. Espere a que el GPS se actualice e intente de nuevo.',
+      });
     }
     if (!validPhoto(fotoIngreso)) {
       return res.status(400).json({ error: 'La foto de evidencia es OBLIGATORIA para registrar entrada' });
@@ -862,6 +880,7 @@ app.post('/api/attendance/check-in', requireAuth(ROLES_WORKER), async (req, res)
       `);
 
     lastPings.delete(usuarioId);
+    gpsImprecisos.delete(usuarioId);
     const registro = sinFotos(registroResultado.recordset[0]);
     console.log(`🔔 [CHECK_IN] Usuario ${usuarioId} registró ENTRADA (similitud ${bio.sim}%).`);
     emitStaff('attendance_event', { tipo: 'CHECK_IN', usuarioId, asistencia: registro, geocerca: geo, fecha: new Date().toISOString() });
@@ -933,6 +952,7 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
       `);
 
     lastPings.delete(usuarioId);
+    gpsImprecisos.delete(usuarioId);
     const registroCompletado = sinFotos(resActualizacion.recordset[0]);
     console.log(`🔔 [CHECK_OUT] Usuario ${usuarioId} registró SALIDA.`);
     emitStaff('attendance_event', { tipo: 'CHECK_OUT', usuarioId, asistencia: registroCompletado, fecha: new Date().toISOString() });
@@ -945,9 +965,23 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
 
 app.post('/api/location/ping', requireAuth(ROLES_WORKER), async (req, res) => {
   try {
-    const { latitud, longitud, precision, velocidad, rumbo } = req.body || {};
+    const { latitud, longitud, precision, velocidad, rumbo, antiguedadMs } = req.body || {};
     const usuarioId = req.user.id;
-    if (!validCoords(latitud, longitud)) return res.status(400).json({ error: 'Parámetros incompletos' });
+    if (!validCoords(latitud, longitud) || !isNum(precision)) return res.status(400).json({ error: 'Parámetros incompletos' });
+
+    // Un punto impreciso (o viejo) no se guarda: dejaría al trabajador "ubicado" donde no está
+    if (precision > config.gpsMaxPrecisionPing || (isNum(antiguedadMs) && antiguedadMs > config.gpsMaxAgeMs)) {
+      gpsImprecisos.set(usuarioId, { t: Date.now(), precision });
+      return res.json({
+        exito: true,
+        omitido: true,
+        imprecisa: true,
+        precision: Math.round(precision),
+        maxima: config.gpsMaxPrecisionPing,
+        geocerca: lastPings.get(usuarioId)?.geo,
+      });
+    }
+    gpsImprecisos.delete(usuarioId);
 
     // Punto demasiado reciente y casi en el mismo lugar: no se guarda (responde con el último resultado)
     const previo = lastPings.get(usuarioId);
@@ -1101,6 +1135,15 @@ function pushDisponible(res) {
   }
   return true;
 }
+
+// El celular consulta la precisión GPS que se le exige
+app.get('/api/gps/config', requireAuth(), (req, res) => {
+  res.json({
+    maxPrecisionCheckin: config.gpsMaxPrecisionCheckin,
+    maxPrecisionPing: config.gpsMaxPrecisionPing,
+    maxAgeMs: config.gpsMaxAgeMs,
+  });
+});
 
 // El celular consulta si el servidor admite notificaciones y obtiene la clave pública para suscribirse
 app.get('/api/push/config', requireAuth(), (req, res) => {

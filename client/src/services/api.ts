@@ -257,14 +257,20 @@ export const api = {
     longitud: number,
     precision?: number,
     fotoIngreso?: string,
-    ..._legacy: unknown[]
+    antiguedadMs?: number
   ) {
     const ticket = bioTicket;
     bioTicket = null;
-    return request('/attendance/check-in', {
-      method: 'POST',
-      body: JSON.stringify({ latitud, longitud, precision, fotoIngreso, ticket }),
-    });
+    try {
+      return await request('/attendance/check-in', {
+        method: 'POST',
+        body: JSON.stringify({ latitud, longitud, precision, fotoIngreso, ticket, antiguedadMs }),
+      });
+    } catch (err: any) {
+      // Si fue por la ubicación, el servidor no consumió el ticket facial: se conserva para reintentar
+      if (typeof err?.data?.codigo === 'string' && err.data.codigo.startsWith('GPS_')) bioTicket = ticket;
+      throw err;
+    }
   },
 
   // Registrar Salida
@@ -290,8 +296,19 @@ export const api = {
   },
 
   // Ping de Ubicación (solo turno activo)
-  async sendLocationPing(_usuarioId: number, latitud: number, longitud: number, precision?: number) {
-    return request('/location/ping', { method: 'POST', body: JSON.stringify({ latitud, longitud, precision }) });
+  async sendLocationPing(
+    _usuarioId: number,
+    latitud: number,
+    longitud: number,
+    precision?: number,
+    antiguedadMs?: number
+  ): Promise<any> {
+    return request('/location/ping', { method: 'POST', body: JSON.stringify({ latitud, longitud, precision, antiguedadMs }) });
+  },
+
+  /** Precisión GPS que exige el servidor (metros) y antigüedad máxima de la lectura. */
+  async getGpsConfig(): Promise<{ maxPrecisionCheckin: number; maxPrecisionPing: number; maxAgeMs: number }> {
+    return request('/gps/config');
   },
 
   // Historial de Asistencia

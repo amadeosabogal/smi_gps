@@ -141,8 +141,8 @@ class GeolocationService {
           resolve(coords);
         },
         (err) => {
-          // Si el sensor GPS demora o falla pero tenemos posición previa, usarla de inmediato
-          if (this.lastKnownCoords) {
+          // Si el sensor GPS demora o falla pero tenemos una posición MUY reciente, usarla; una vieja no sirve
+          if (this.lastKnownCoords && Date.now() - this.lastKnownCoords.timestamp < 15000) {
             console.warn('GPS móvil demoró, usando última posición conocida:', this.lastKnownCoords);
             return resolve(this.lastKnownCoords);
           }
@@ -166,6 +166,90 @@ class GeolocationService {
           timeout: maxWaitMs,
           maximumAge: allowCached ? 60000 : 5000,
         }
+      );
+    });
+  }
+
+  /**
+   * Espera una lectura GPS FRESCA y PRECISA. Sigue escuchando al sensor hasta obtener una precisión
+   * de maxAccuracy metros o mejor (o hasta agotar waitMs) y devuelve la mejor lectura que llegó.
+   * Nunca reutiliza una posición guardada: en un vehículo una posición de hace un minuto está a ~1 km.
+   */
+  public async getPrecisePosition(options: {
+    maxAccuracy: number;
+    waitMs?: number;
+    onProgress?: (accuracy: number) => void;
+  }): Promise<{ coords: CoordsData; precise: boolean }> {
+    const waitMs = options.waitMs ?? 12000;
+    const toCoords = (pos: { coords: GeolocationCoordinates | { latitude: number; longitude: number; accuracy: number; speed?: number | null; heading?: number | null }; timestamp: number }): CoordsData => ({
+      latitude: pos.coords.latitude,
+      longitude: pos.coords.longitude,
+      accuracy: pos.coords.accuracy,
+      speed: pos.coords.speed,
+      heading: pos.coords.heading,
+      timestamp: pos.timestamp,
+    });
+
+    return new Promise((resolve, reject) => {
+      let best: CoordsData | null = null;
+      let finished = false;
+      let watchId: string | number | null = null;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const stop = () => {
+        if (timer) clearTimeout(timer);
+        if (watchId !== null) {
+          if (typeof watchId === 'string') Geolocation.clearWatch({ id: watchId }).catch(() => {});
+          else navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+        }
+      };
+      const finish = (precise: boolean) => {
+        if (finished) return;
+        finished = true;
+        stop();
+        if (best) {
+          this.lastKnownCoords = best;
+          resolve({ coords: best, precise });
+        } else {
+          reject(new Error('No se pudo obtener la ubicación GPS. Active la ubicación en su celular y permita el acceso al navegador.'));
+        }
+      };
+      const onReading = (c: CoordsData) => {
+        if (!best || c.accuracy < best.accuracy) best = c;
+        options.onProgress?.(c.accuracy);
+        if (c.accuracy <= options.maxAccuracy) finish(true);
+      };
+      const onFail = (message: string) => {
+        if (!best) {
+          finished = true;
+          stop();
+          reject(new Error(message));
+        }
+      };
+
+      timer = setTimeout(() => finish(false), waitMs);
+
+      if (this.isNative()) {
+        this.requestPermissions().then(async () => {
+          watchId = await Geolocation.watchPosition({ enableHighAccuracy: true, timeout: waitMs }, (pos, err) => {
+            if (err) return onFail('No se pudo obtener la ubicación GPS.');
+            if (pos) onReading(toCoords(pos));
+          });
+        });
+        return;
+      }
+
+      if (!('geolocation' in navigator)) return onFail('Su navegador o celular no soporta geolocalización GPS.');
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => onReading(toCoords(pos)),
+        (err) =>
+          onFail(
+            err.code === err.PERMISSION_DENIED
+              ? 'Permiso denegado. Debe autorizar el acceso a la ubicación en los ajustes de su celular o navegador.'
+              : 'Señal GPS no disponible. Active la ubicación (GPS) en su celular.'
+          ),
+        { enableHighAccuracy: true, maximumAge: 0, timeout: waitMs }
       );
     });
   }

@@ -75,6 +75,8 @@ export interface DatosTrabajadorEnVivo {
   hora_ingreso: string | null;
   tiene_foto_ingreso?: boolean;
   push_activo?: boolean | number; // ¿tiene las alertas activadas en su celular?
+  segundos_sin_ping?: number | null; // antigüedad de la última señal GPS recibida
+  gps_imprecisa?: boolean; // el celular está enviando una ubicación demasiado imprecisa
   estado_asistencia: 'activo' | null;
   latitud: number | null;
   longitud: number | null;

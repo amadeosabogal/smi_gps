@@ -53,6 +53,14 @@ const ALERT_PRESETS = [
   'Recuerde registrar su salida al terminar su turno.',
 ];
 
+// "hace 45 s", "hace 3 min", "hace 1 h 12 min"
+const formatoHace = (segundos: number) => {
+  const s = Math.max(0, Math.round(segundos));
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
+};
+
 // Formatea milisegundos como HH:MM:SS (las horas pueden pasar de 24)
 const formatElapsed = (ms: number) => {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -1037,16 +1045,31 @@ export const AdminPage: React.FC = () => {
                               </div>
                             )}
 
-                            {isActive && (
-                              <div className="mt-2 text-xs text-slate-500 bg-white p-2 rounded-lg border border-slate-100 flex items-center justify-between">
-                                <span className="font-medium text-slate-700">
-                                  {worker.estacion_nombre ? `${worker.estacion_nombre}` : 'Sin estación fija'}
-                                </span>
-                                <span className="text-blue-600 font-semibold">
-                                  ±{Math.round(worker.precision || 10)}m
-                                </span>
-                              </div>
-                            )}
+                            {isActive && (() => {
+                              const seg = worker.segundos_sin_ping ?? 0;
+                              const sinSenal = seg > 90; // más de 90 s sin ningún punto GPS
+                              const imprecisa = Boolean(worker.gps_imprecisa) || (worker.precision ?? 0) > 50;
+                              return (
+                                <div className="mt-2 border border-slate-200 bg-white p-2 text-sm">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-medium text-slate-700">
+                                      {worker.estacion_nombre ? `${worker.estacion_nombre}` : 'Sin estación fija'}
+                                    </span>
+                                    <span className={`font-semibold tabular-nums ${imprecisa ? 'text-red-700' : 'text-brand-700'}`}>
+                                      {worker.precision != null ? `±${Math.round(worker.precision)} m` : '—'}
+                                    </span>
+                                  </div>
+                                  <div className="mt-1 flex items-center justify-between text-xs">
+                                    <span className={sinSenal ? 'font-semibold text-red-700' : 'text-slate-500'}>
+                                      {sinSenal
+                                        ? `Sin señal GPS desde hace ${formatoHace(seg)}`
+                                        : `Última señal hace ${formatoHace(seg)}`}
+                                    </span>
+                                    {imprecisa && <span className="font-semibold text-red-700">GPS impreciso</span>}
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })

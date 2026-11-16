@@ -232,7 +232,8 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
       if (!worker.latitud || !worker.longitud) return;
 
       const isInside = worker.dentro_de_estacion;
-      const markerColor = isInside ? '#1f7a4d' : '#b45f06';
+      const sinSenal = (worker.segundos_sin_ping ?? 0) > 90; // sin puntos GPS desde hace más de 90 s
+      const markerColor = sinSenal ? '#64748b' : isInside ? '#1f7a4d' : '#b45f06';
       const initials = worker.nombre_usuario
         .split(' ')
         .slice(0, 2)
@@ -370,6 +371,10 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
         <div className="flex items-center space-x-2">
           <span className="inline-block h-3 w-3 bg-amber-600"></span>
           <span>Trabajador fuera de zona</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <span className="inline-block h-3 w-3 bg-slate-500"></span>
+          <span>Sin señal GPS reciente</span>
         </div>
         <div className="flex items-center space-x-2">
           <span className="inline-block h-3 w-3 border-2 border-brand-600"></span>

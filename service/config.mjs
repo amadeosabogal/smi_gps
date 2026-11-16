@@ -49,6 +49,11 @@ export const config = {
   vapidPublicKey: env.VAPID_PUBLIC_KEY || '',
   vapidPrivateKey: env.VAPID_PRIVATE_KEY || '',
   vapidSubject: env.VAPID_SUBJECT || 'mailto:admin@example.com',
+  // Precisión GPS exigida (metros). Una ubicación aproximada (p. ej. ±2000 m) no sirve para saber en qué estación está alguien.
+  gpsMaxPrecisionCheckin: Number(env.GPS_MAX_ACCURACY_CHECKIN_M || 50),
+  gpsMaxPrecisionPing: Number(env.GPS_MAX_ACCURACY_PING_M || 100),
+  // Antigüedad máxima (ms) de la lectura GPS que el celular declara al marcar (evita usar posiciones viejas)
+  gpsMaxAgeMs: Number(env.GPS_MAX_AGE_MS || 30000),
   sessionHours: Number(env.SESSION_HOURS || 12),
   adminSessionHours: Number(env.ADMIN_SESSION_HOURS || 8),
   // TLS opcional directo en Node (si no se usa un proxy inverso como nginx/Caddy)
