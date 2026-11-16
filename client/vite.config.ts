@@ -16,6 +16,8 @@ export default defineConfig({
         // El wasm de MediaPipe (~14 MB) y los modelos son demasiado grandes para el precaché inicial:
         // se cachean en la primera carga (CacheFirst) y luego funcionan sin conexión.
         globIgnores: ['mediapipe/**', 'models/**'],
+        // El JS principal ya supera los 2 MiB que Workbox precachea por defecto (el build fallaba al pasarse por poco)
+        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         // Eventos push/notificationclick: las alertas llegan con la app cerrada y la pantalla apagada
         importScripts: ['push-sw.js'],
         clientsClaim: true,
