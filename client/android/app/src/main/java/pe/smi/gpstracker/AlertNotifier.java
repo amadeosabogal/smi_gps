@@ -18,6 +18,36 @@ final class AlertNotifier {
 
     private AlertNotifier() {}
 
+    /** Aviso simple (sin acción) con el mismo canal de alta importancia: p. ej. "su turno terminó". */
+    static void avisar(Context ctx, String titulo, String texto) {
+        asegurarCanal(ctx);
+        Notification n = new NotificationCompat.Builder(ctx, CHANNEL_ID)
+                .setContentTitle(titulo)
+                .setContentText(texto)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(texto))
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .build();
+        try {
+            ((NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE)).notify(9001, n);
+        } catch (SecurityException ignore) {
+            // sin permiso de notificaciones
+        }
+    }
+
+    private static void asegurarCanal(Context ctx) {
+        NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL_ID) == null) {
+            NotificationChannel canal = new NotificationChannel(CHANNEL_ID, "Alertas del supervisor", NotificationManager.IMPORTANCE_HIGH);
+            canal.setDescription("Avisos urgentes del supervisor durante su turno");
+            canal.enableVibration(true);
+            canal.setVibrationPattern(new long[]{0, 300, 150, 300, 150, 600});
+            canal.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            nm.createNotificationChannel(canal);
+        }
+    }
+
     static void mostrar(Context ctx, int alertaId, String mensaje) {
         NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL_ID) == null) {

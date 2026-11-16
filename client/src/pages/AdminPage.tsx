@@ -105,6 +105,11 @@ export const AdminPage: React.FC = () => {
   const [logsSearch, setLogsSearch] = useState<string>('');
   const [exporting, setExporting] = useState<boolean>(false);
 
+  // Salida forzada de un trabajador (sin verificación facial)
+  const [forzarTarget, setForzarTarget] = useState<{ asistenciaId: number; nombre: string; codigo: string } | null>(null);
+  const [forzarMotivo, setForzarMotivo] = useState<string>('');
+  const [forzando, setForzando] = useState<boolean>(false);
+
   // Alertas push al celular del trabajador
   const [alertTarget, setAlertTarget] = useState<DatosTrabajadorEnVivo | null>(null);
   const [alertMsg, setAlertMsg] = useState<string>('');
@@ -723,6 +728,26 @@ export const AdminPage: React.FC = () => {
     if (activeTab !== 'map') cancelarColocacion();
   }, [activeTab]);
 
+  const handleForzarSalida = async () => {
+    if (!forzarTarget || forzando) return;
+    const motivo = forzarMotivo.trim();
+    if (motivo.length < 3) return;
+    setForzando(true);
+    try {
+      const r = await api.forceCheckout(forzarTarget.asistenciaId, motivo);
+      const hora = new Date().toLocaleTimeString();
+      setRecentNotification({ texto: `Salida forzada registrada para ${r.trabajador} (${hora})`, fecha: hora });
+      setForzarTarget(null);
+      setForzarMotivo('');
+      loadLive();
+      scheduleHeavyReload();
+    } catch (err: any) {
+      alert(err.message || 'No se pudo registrar la salida forzada');
+    } finally {
+      setForzando(false);
+    }
+  };
+
   // Eliminar una estación (con confirmación: es una baja que no se puede deshacer desde el panel)
   const handleDeleteStation = async (st: EstacionTrabajo) => {
     const ok = window.confirm(
@@ -1165,6 +1190,26 @@ export const AdminPage: React.FC = () => {
                               </div>
                             )}
 
+                            {isActive && worker.asistencia_id && (
+                              <div className="mt-2 flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setForzarTarget({
+                                      asistenciaId: worker.asistencia_id as number,
+                                      nombre: worker.nombre_usuario,
+                                      codigo: worker.codigo_empleado,
+                                    });
+                                    setForzarMotivo('');
+                                  }}
+                                  className="px-2.5 py-1 text-xs font-semibold border border-red-300 bg-white text-red-800 hover:bg-red-50 transition active:scale-95"
+                                >
+                                  Forzar salida
+                                </button>
+                              </div>
+                            )}
+
                             {isActive && (() => {
                               const seg = worker.segundos_sin_ping ?? 0;
                               const sinSenal = seg > 90; // más de 90 s sin ningún punto GPS
@@ -1347,6 +1392,14 @@ export const AdminPage: React.FC = () => {
                                     timeStyle: 'short',
                                   })
                                 : '—'}
+                              {log.notas?.startsWith('SALIDA FORZADA') && (
+                                <span
+                                  className="ml-1.5 border border-red-300 bg-red-50 px-1 py-0.5 align-middle text-[10px] font-semibold text-red-800"
+                                  title={log.notas}
+                                >
+                                  Forzada
+                                </span>
+                              )}
                             </td>
                             <td className="px-4 py-3">
                               <span className="font-medium text-slate-600">
@@ -1421,9 +1474,23 @@ export const AdminPage: React.FC = () => {
                               </span>
                             </td>
                             <td className="sticky right-0 bg-white px-4 py-3 text-center shadow-[-6px_0_6px_-6px_rgba(15,23,42,0.25)]">
-                              <button type="button" onClick={() => setRutaTurnoId(log.id)} className="btn-secondary btn-sm whitespace-nowrap">
-                                Ver recorrido
-                              </button>
+                              <div className="flex items-center justify-center gap-1.5">
+                                <button type="button" onClick={() => setRutaTurnoId(log.id)} className="btn-secondary btn-sm whitespace-nowrap">
+                                  Ver recorrido
+                                </button>
+                                {log.estado === 'activo' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setForzarTarget({ asistenciaId: log.id, nombre: log.nombre_usuario || '', codigo: log.codigo_empleado || '' });
+                                      setForzarMotivo('');
+                                    }}
+                                    className="border border-red-300 bg-white px-2 py-1 text-xs font-semibold whitespace-nowrap text-red-800 hover:bg-red-50"
+                                  >
+                                    Forzar salida
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         ))
@@ -1930,6 +1997,68 @@ export const AdminPage: React.FC = () => {
       )}
 
       {/* Modal: Vista Previa de Evidencia Fotográfica y Comparación Biométrica */}
+      {/* Ventana: salida forzada (sin verificación facial) */}
+      {forzarTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">
+          <div className="panel w-full max-w-md">
+            <div className="flex items-start justify-between border-b border-slate-200 p-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Forzar salida</h3>
+                <p className="text-sm text-slate-600">
+                  {forzarTarget.nombre} · {forzarTarget.codigo}
+                </p>
+              </div>
+              <button type="button" onClick={() => setForzarTarget(null)} className="p-1 text-slate-400 hover:text-slate-700" aria-label="Cerrar">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-3 p-4">
+              <p className="border-l-4 border-l-amber-600 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                Se cerrará su turno <strong>sin verificación facial ni foto</strong>, con la hora actual y su última ubicación conocida. Quedará
+                registrado a su nombre, con el motivo. No se puede deshacer.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {['Olvidó marcar su salida', 'Teléfono sin batería o perdido', 'Falla de la aplicación', 'Cambio de turno'].map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setForzarMotivo(m)}
+                    className={`border px-2.5 py-1 text-xs font-semibold ${
+                      forzarMotivo === m ? 'border-brand-600 bg-brand-600 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+              <div>
+                <label className="field-label">Motivo (obligatorio)</label>
+                <textarea
+                  value={forzarMotivo}
+                  onChange={(e) => setForzarMotivo(e.target.value.slice(0, 200))}
+                  rows={2}
+                  className="field"
+                  placeholder="Explique por qué se fuerza la salida"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-200 p-4">
+              <button type="button" onClick={() => setForzarTarget(null)} className="btn-secondary">
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleForzarSalida}
+                disabled={forzando || forzarMotivo.trim().length < 3}
+                className="btn-danger disabled:opacity-50"
+              >
+                {forzando ? 'Registrando…' : 'Forzar salida'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Ventana: enviar alerta al celular de un trabajador */}
       {alertTarget && (
         <div className="fixed inset-0 bg-slate-950/70 z-50 flex items-center justify-center p-4">

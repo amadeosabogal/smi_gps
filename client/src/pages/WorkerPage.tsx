@@ -37,6 +37,8 @@ export const WorkerPage: React.FC = () => {
   const [estadoNativo, setEstadoNativo] = useState<EstadoRastreo | null>(null);
   const [permisosAbierto, setPermisosAbierto] = useState<boolean>(false);
   const [errorNativo, setErrorNativo] = useState<string | null>(null);
+  // El turno activo se inició en otro dispositivo: este no registra ubicación (evita mezclar dos celulares)
+  const [turnoEnOtroDispositivo, setTurnoEnOtroDispositivo] = useState<boolean>(false);
 
   // Shift & tracking state
   const [isActiveShift, setIsActiveShift] = useState<boolean>(false);
@@ -58,6 +60,9 @@ export const WorkerPage: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [actionLoading, setActionLoading] = useState<boolean>(false);
   const [isSocketConnected, setIsSocketConnected] = useState<boolean>(socket.connected);
+  // Si no hay conexión con el servidor al abrir la app (por ejemplo, justo después de reiniciar el celular) se reintenta solo
+  const [cargaError, setCargaError] = useState<string | null>(null);
+  const [intentosCarga, setIntentosCarga] = useState<number>(0);
 
   // Carga inicial: lista pública de nombres para el ingreso y, si hay sesión, el perfil y las estaciones
   const loadData = useCallback(async () => {
@@ -70,9 +75,13 @@ export const WorkerPage: React.FC = () => {
           setWorkstations(stationsData);
           setIsAuthenticated(true);
           connectSocket();
+          setCargaError(null);
+          setLoading(false);
           return;
-        } catch {
-          // Sesión vencida o inválida: volver a la pantalla de ingreso
+        } catch (err: any) {
+          // Solo una respuesta 401/403 del servidor significa sesión vencida o inválida (la petición ya la cierra).
+          // Una falla de red o un error del servidor NO cierra la sesión: se conserva y se reintenta.
+          if (err?.status !== 401 && err?.status !== 403) throw err;
           api.logout();
           setIsAuthenticated(false);
         }
@@ -82,12 +91,32 @@ export const WorkerPage: React.FC = () => {
       const asUsers: Usuario[] = publicWorkers.map((w) => ({ ...w, correo: '', rol: 'trabajador', activo: true }));
       setWorkers(asUsers);
       if (asUsers.length > 0) setSelectedUser(asUsers[0]);
-    } catch (err) {
-      console.error('Error cargando datos del trabajador:', err);
-    } finally {
+      setCargaError(null);
       setLoading(false);
+    } catch (err: any) {
+      console.error('Error cargando datos del trabajador:', err);
+      // Sin conexión (o servidor caído): se muestra el aviso con reintento automático en vez de una lista vacía
+      setCargaError(err?.status ? `El servidor respondió con un error (${err.status}).` : 'No se pudo conectar con el servidor.');
+      setLoading(true); // pantalla de "sin conexión" con reintento, nunca una lista de nombres vacía
+      setIntentosCarga((n) => n + 1);
     }
   }, []);
+
+  // Reintento automático cada 5 s, y al recuperar internet o al volver a la app
+  useEffect(() => {
+    if (!cargaError) return;
+    const t = setTimeout(() => loadData(), 5000);
+    const reintentar = () => {
+      if (document.visibilityState === 'visible') loadData();
+    };
+    window.addEventListener('online', reintentar);
+    document.addEventListener('visibilitychange', reintentar);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener('online', reintentar);
+      document.removeEventListener('visibilitychange', reintentar);
+    };
+  }, [cargaError, intentosCarga, loadData]);
 
   useEffect(() => {
     loadData();
@@ -144,10 +173,19 @@ export const WorkerPage: React.FC = () => {
           if (st) setDetectedStation(st);
         }
 
-        if (!geolocationService.getTrackingStatus()) {
-          startContinuousTracking(selectedUser.id);
+        if (workerInfo.en_otro_dispositivo) {
+          // El turno es de otro teléfono: aquí no se rastrea (el servidor ignoraría esos puntos)
+          setTurnoEnOtroDispositivo(true);
+          geolocationService.stopTracking();
+          if (esAppNativa) nativeTracker.detener();
+        } else {
+          setTurnoEnOtroDispositivo(false);
+          if (!geolocationService.getTrackingStatus()) {
+            startContinuousTracking(selectedUser.id);
+          }
         }
       } else {
+        setTurnoEnOtroDispositivo(false);
         setIsActiveShift(false);
         setShiftSeconds(0);
         geolocationService.stopTracking();
@@ -221,7 +259,13 @@ export const WorkerPage: React.FC = () => {
           setEstadoNativo(est);
           setErrorNativo(null);
         })
-        .catch((err: any) => setErrorNativo(err?.message || 'No se pudo iniciar el rastreo en segundo plano'));
+        .catch((err: any) => {
+          if (err?.data?.codigo === 'OTRO_DISPOSITIVO') {
+            setTurnoEnOtroDispositivo(true);
+            return;
+          }
+          setErrorNativo(err?.message || 'No se pudo iniciar el rastreo en segundo plano');
+        });
       return;
     }
     lastPingRef.current = null;
@@ -259,7 +303,12 @@ export const WorkerPage: React.FC = () => {
             setDetectedStation(res.geocerca.estacion);
             setDistanceToNearest(res.geocerca.distanciaMetros);
           }
-        } catch (err) {
+        } catch (err: any) {
+          if (err?.data?.codigo === 'OTRO_DISPOSITIVO') {
+            setTurnoEnOtroDispositivo(true);
+            geolocationService.stopTracking();
+            return;
+          }
           console.error('Error enviando telemetría GPS:', err);
         }
       },
@@ -336,7 +385,7 @@ export const WorkerPage: React.FC = () => {
   // Durante el turno: mantener la pantalla encendida (el navegador deja de entregar el GPS con la pantalla
   // apagada o la app en segundo plano) y reportar la posición al instante cuando se vuelve a la app.
   useEffect(() => {
-    if (esAppNativa || !isActiveShift || !selectedUser) return; // en la app Android no hace falta mantener la pantalla encendida
+    if (esAppNativa || !isActiveShift || !selectedUser || turnoEnOtroDispositivo) return; // en la app Android no hace falta mantener la pantalla encendida
     const usuarioId = selectedUser.id;
     let lock: WakeLockSentinel | null = null;
 
@@ -387,7 +436,21 @@ export const WorkerPage: React.FC = () => {
       lock?.release().catch(() => {});
       setWakeLockActivo(false);
     };
-  }, [isActiveShift, selectedUser]);
+  }, [isActiveShift, selectedUser, turnoEnOtroDispositivo]);
+
+  // Un administrador cerró el turno (salida forzada): se avisa al instante y se detiene el rastreo
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const onCerrado = () => {
+      setAlertaActiva({ id: null, mensaje: 'Un administrador registró su salida. Su turno ha terminado y su ubicación ya no se comparte.' });
+      if ('vibrate' in navigator) navigator.vibrate([300, 150, 300]);
+      checkShiftStatus();
+    };
+    socket.on('turno_cerrado', onCerrado);
+    return () => {
+      socket.off('turno_cerrado', onCerrado);
+    };
+  }, [isAuthenticated, checkShiftStatus]);
 
   // Recepción de alertas: por el socket (app abierta), por el service worker (app visible) o al tocar la notificación
   useEffect(() => {
@@ -684,7 +747,17 @@ export const WorkerPage: React.FC = () => {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-slate-100 p-4">
         <div className="mb-3 h-10 w-10 animate-spin rounded-full border-4 border-brand-600 border-t-transparent" />
-        <p className="text-sm text-slate-600">Cargando…</p>
+        <p className="text-sm text-slate-600">{cargaError ? 'Sin conexión con el servidor' : 'Cargando…'}</p>
+        {cargaError && (
+          <div className="mt-3 max-w-xs text-center">
+            <p className="text-sm text-slate-600">
+              {cargaError} Verifique que tenga internet. Se reintentará automáticamente; su sesión no se ha cerrado.
+            </p>
+            <button type="button" onClick={() => loadData()} className="btn-primary mt-3">
+              Reintentar ahora
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -914,9 +987,17 @@ export const WorkerPage: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3 text-sm">
-              <ShieldCheck className={`h-4 w-4 flex-shrink-0 ${isActiveShift ? 'text-green-700' : 'text-slate-500'}`} />
-              <span className={isActiveShift ? 'text-green-800' : 'text-slate-600'}>
-                {isActiveShift
+              <ShieldCheck
+                className={`h-4 w-4 flex-shrink-0 ${
+                  isActiveShift && turnoEnOtroDispositivo ? 'text-amber-700' : isActiveShift ? 'text-green-700' : 'text-slate-500'
+                }`}
+              />
+              <span
+                className={isActiveShift && turnoEnOtroDispositivo ? 'text-amber-800' : isActiveShift ? 'text-green-800' : 'text-slate-600'}
+              >
+                {isActiveShift && turnoEnOtroDispositivo
+                  ? 'GPS en pausa: su turno está activo en otro dispositivo.'
+                  : isActiveShift
                   ? 'GPS activo: su ubicación se envía durante el turno.'
                   : 'GPS inactivo: su ubicación no se comparte fuera del turno.'}
               </span>
@@ -936,7 +1017,16 @@ export const WorkerPage: React.FC = () => {
                 </section>
               )}
 
-              {esAppNativa ? (
+              {turnoEnOtroDispositivo ? (
+                <section className="panel border-l-4 border-l-amber-600 p-4">
+                  <h3 className="text-sm font-semibold text-slate-900">Su turno está activo en otro dispositivo</h3>
+                  <p className="mt-0.5 text-sm text-slate-600">
+                    Este teléfono no registra su ubicación: solo lo hace el dispositivo donde marcó la entrada. Para continuar
+                    aquí, registre su salida en el otro dispositivo y vuelva a marcar su entrada en este. Si ya no tiene el
+                    otro dispositivo, también puede registrar la salida desde aquí.
+                  </p>
+                </section>
+              ) : esAppNativa ? (
                 <section
                   className={`panel border-l-4 p-4 ${
                     errorNativo || (estadoNativo && !estadoNativo.servicioCorriendo) ? 'border-l-red-700' : 'border-l-green-700'

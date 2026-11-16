@@ -1,3 +1,4 @@
+import { getDeviceId } from './deviceId';
 import type {
   Usuario,
   EstacionTrabajo,
@@ -77,6 +78,7 @@ async function request(
 ) {
   const headers: Record<string, string> = { ...(init.headers as Record<string, string>) };
   if (init.body !== undefined) headers['Content-Type'] = 'application/json';
+  headers['X-Device-Id'] = getDeviceId(); // el turno queda atado al dispositivo que marcó la entrada
   const token = auth.getToken();
   if (token && opts.auth !== false) headers.Authorization = `Bearer ${token}`;
 
@@ -302,6 +304,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ latitud, longitud, precision, fotoSalida, ticket }),
     });
+  },
+
+  /** Administrador: cierra el turno de un trabajador sin verificación facial. El motivo queda en el historial. */
+  async forceCheckout(asistenciaId: number, motivo: string): Promise<{ exito: boolean; trabajador: string }> {
+    return request(`/attendance/${asistenciaId}/force-checkout`, { method: 'POST', body: JSON.stringify({ motivo }) });
   },
 
   /** Puntos GPS de un turno, en orden, para dibujar el recorrido (administración). */

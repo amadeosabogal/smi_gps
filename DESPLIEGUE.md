@@ -152,6 +152,19 @@ Cada trabajador debe conceder en el celular: ubicación precisa, **"Permitir tod
 `minVersionCode` es la versión mínima aceptable: quien tenga una menor ve el aviso en rojo y **no puede cerrarlo** (no bloquea la app ni detiene el rastreo). Usa `0` o `1` si no quieres forzar a nadie. No hace falta reiniciar el servidor (se relee cada 30 s). La ruta del archivo se puede cambiar con `ANDROID_VERSION_FILE` en `service/.env`.
 El aviso existe solo desde la versión 1.0.1 de la app: quien tenga la 1.0.0 debe instalar la 1.0.1 una vez a mano.
 
+### Un turno, un dispositivo
+Cada instalación de la app (o navegador) genera un identificador y lo envía en la cabecera `X-Device-Id`. Al marcar la entrada, el turno queda **atado a ese dispositivo** (`RegistroAsistencia.dispositivo_id`): solo él puede enviar la ubicación del turno. Si el mismo usuario abre la app en otro teléfono, ese teléfono muestra "Su turno está activo en otro dispositivo", **no registra ubicación** y su servicio se detiene; el servidor responde `409/403 OTRO_DISPOSITIVO`. Así dos celulares con el mismo usuario no mezclan sus puntos y no se puede dejar un teléfono quieto mientras el trabajador se mueve con otro.
+
+Puesta en marcha (una vez): `npm run migrate-dispositivo` (añade la columna; con `--dry-run` solo muestra qué haría) y `pm2 restart smi-gps`. Sin la columna todo funciona como antes y el servidor avisa en el arranque.
+
+Qué esperar:
+- Los turnos que ya estaban activos al migrar, y los iniciados con versiones anteriores de la app (sin identificador), **no quedan atados**: cualquier dispositivo puede enviar ubicación hasta que termine ese turno.
+- La app instalada (APK) y la web (PWA) cuentan como dispositivos distintos, aunque estén en el mismo teléfono.
+- Si el trabajador borra los datos de la app o la reinstala a mitad de turno, el teléfono pasa a ser "otro dispositivo": debe registrar la salida y volver a marcar la entrada. La salida se puede registrar desde cualquier dispositivo (con verificación facial), por ejemplo si perdió el teléfono donde empezó el turno.
+
+### Salida forzada por un administrador
+En **Personal en Turno** (y en el historial, en los turnos activos) el administrador tiene el botón **Forzar salida**: cierra el turno **sin verificación facial ni foto**, con la hora actual y la última ubicación conocida del trabajador. Pide un motivo obligatorio (3 a 200 caracteres) que queda en `RegistroAsistencia.notas` como `SALIDA FORZADA por <código> <nombre>: <motivo>`; el historial la marca con la etiqueta "Forzada". Solo el rol `administrador` puede hacerlo (no los supervisores) y no se puede deshacer. Si el trabajador tiene la app abierta se entera al instante; la app Android además muestra una notificación y detiene su servicio de GPS en el siguiente envío (hasta ~15 s).
+
 ### Recorrido de un turno (panel de administración)
 En **Historial de asistencia** (botón "Ver recorrido" de cada turno) y en **Personal en Turno** (turnos activos) se abre un visor con el recorrido sobre el mapa: tramos verdes dentro de una estación y naranjas fuera de zona, huecos de señal punteados (más de 90 s sin ubicación), distancia, tiempo dentro/fuera y reproducción del recorrido. Un turno activo se actualiza solo cada 15 s. Lee los puntos de `HistorialUbicaciones`, por lo que **desaparecen del visor cuando la retención los borra**. Antes de usarlo en producción ejecuta una vez `npm run migrate-historial` (crea el índice `IX_HistorialUbicaciones_asistencia`; con muchos puntos tarda un poco).
 

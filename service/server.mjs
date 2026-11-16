@@ -133,6 +133,21 @@ async function checkPushTables() {
   }
 }
 
+// ¿Existe ya la columna dispositivo_id? (se crea con: npm run migrate-dispositivo). Sin ella todo funciona como antes.
+let dispositivoColumna = false;
+async function checkDispositivoColumna() {
+  try {
+    const p = await getPool();
+    const r = await p.request().query("SELECT COL_LENGTH('RegistroAsistencia', 'dispositivo_id') AS n");
+    dispositivoColumna = Boolean(r.recordset[0].n);
+    if (!dispositivoColumna) {
+      console.warn('⚠️ Los turnos aún no se atan al dispositivo: ejecuta  npm run migrate-dispositivo  y reinicia.');
+    }
+  } catch (err) {
+    console.warn('No se pudo comprobar la columna dispositivo_id:', err.message);
+  }
+}
+
 process.on('uncaughtException', (err) => {
   console.error('🚨 Excepción no capturada:', err);
 });
@@ -223,6 +238,29 @@ const PING_MIN_GAP_MS = 5_000;      // como mínimo 5 s entre puntos guardados..
 const PING_MIN_MOVE_METERS = 10;    // ...salvo que se haya movido más de 10 m
 const lastPings = new Map();        // usuarioId -> { t, lat, lng, geo }
 const gpsImprecisos = new Map();    // usuarioId -> { t, precision } (último punto descartado por impreciso)
+// Identificador del dispositivo: la app lo envía en la cabecera X-Device-Id (se genera una vez por instalación)
+const dispositivoDe = (req) => {
+  const v = req.headers['x-device-id'];
+  return typeof v === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(v) ? v : null;
+};
+// Turno activo del trabajador y dispositivo al que está atado (null = sin atar: turnos de versiones anteriores).
+// Se guarda 10 s en memoria para no consultar la base en cada punto GPS; check-in y check-out la invalidan.
+const turnoCache = new Map(); // usuarioId -> { t, turno }
+async function turnoActivoDe(p, usuarioId) {
+  const c = turnoCache.get(usuarioId);
+  if (c && Date.now() - c.t < 10_000) return c.turno;
+  const r = await p.request().input('u', sql.Int, usuarioId).query(
+    `SELECT id${dispositivoColumna ? ', dispositivo_id' : ''} FROM RegistroAsistencia WHERE usuario_id = @u AND estado = 'activo'`
+  );
+  const fila = r.recordset[0];
+  const turno = fila ? { id: fila.id, dispositivo: fila.dispositivo_id || null } : null;
+  turnoCache.set(usuarioId, { t: Date.now(), turno });
+  return turno;
+}
+const esOtroDispositivo = (turno, dispositivo) => Boolean(turno && turno.dispositivo && turno.dispositivo !== dispositivo);
+const MSG_OTRO_DISPOSITIVO =
+  'Su turno está activo en otro dispositivo. Este teléfono no registra ubicación: para continuar aquí, registre su salida en el otro dispositivo y vuelva a marcar su entrada.';
+
 const appNativaVista = new Map();   // usuarioId -> ms del último lote recibido de la app Android (sirve para saber si puede recibir alertas)
 const appNativaActiva = (usuarioId, ventanaMs = 120_000) => Date.now() - (appNativaVista.get(usuarioId) || 0) < ventanaMs;
 
@@ -263,6 +301,7 @@ function requireTrackAuth(req, res, next) {
   }
   req.user = { id: payload.sub, rol: 'trabajador' };
   req.trackAsistenciaId = payload.aid;
+  req.trackDispositivo = typeof payload.did === 'string' && payload.did ? payload.did : null;
   next();
 }
 
@@ -858,12 +897,17 @@ app.get('/api/me/shift', requireAuth(ROLES_WORKER), async (req, res) => {
     const p = await getPool();
     const r = await p.request().input('id', sql.Int, req.user.id).query(`
       SELECT a.id as asistencia_id, a.hora_ingreso, a.estado as estado_asistencia,
+             ${dispositivoColumna ? 'a.dispositivo_id,' : ''}
              uv.latitud, uv.longitud, uv.precision, uv.dentro_de_estacion, uv.estacion_actual_id as estacion_id
       FROM RegistroAsistencia a
       LEFT JOIN UbicacionesEnVivo uv ON uv.usuario_id = a.usuario_id AND uv.activo = 1
       WHERE a.usuario_id = @id AND a.estado = 'activo'
     `);
-    res.json(r.recordset[0] || null);
+    const fila = r.recordset[0];
+    if (!fila) return res.json(null);
+    // El identificador del dispositivo no sale del servidor: solo se informa si este teléfono es el del turno
+    const { dispositivo_id: atado, ...resto } = fila;
+    res.json({ ...resto, en_otro_dispositivo: Boolean(atado && atado !== dispositivoDe(req)) });
   } catch (err) {
     fail(res, err);
   }
@@ -916,6 +960,7 @@ app.post('/api/attendance/check-in', requireAuth(ROLES_WORKER), async (req, res)
       .input('foto', sql.NVarChar(sql.MAX), fotoIngreso)
       .input('similitud', sql.Float, bio.sim)
       .input('dentro', sql.Bit, geo.dentroDeEstacion ? 1 : 0)
+      .input('dispositivo', sql.VarChar(64), dispositivoDe(req))
       .query(`
         SET XACT_ABORT ON;
         BEGIN TRANSACTION;
@@ -929,14 +974,14 @@ app.post('/api/attendance/check-in', requireAuth(ROLES_WORKER), async (req, res)
         INSERT INTO RegistroAsistencia (
           usuario_id, hora_ingreso, latitud_ingreso, longitud_ingreso, precision_ingreso,
           estacion_ingreso_id, foto_ingreso_url, similitud_facial, verificacion_facial_exitosa,
-          metodo_validacion, estado
+          metodo_validacion, estado${dispositivoColumna ? ', dispositivo_id' : ''}
         )
         OUTPUT INSERTED.id, INSERTED.usuario_id, INSERTED.hora_ingreso, INSERTED.latitud_ingreso,
                INSERTED.longitud_ingreso, INSERTED.precision_ingreso, INSERTED.estacion_ingreso_id,
                INSERTED.foto_ingreso_url, INSERTED.similitud_facial, INSERTED.verificacion_facial_exitosa,
                INSERTED.metodo_validacion, INSERTED.estado
         INTO @TempAsistencia
-        VALUES (@usuarioId, GETDATE(), @lat, @lng, @acc, @estId, @foto, @similitud, 1, 'facial_biometrico', 'activo');
+        VALUES (@usuarioId, GETDATE(), @lat, @lng, @acc, @estId, @foto, @similitud, 1, 'facial_biometrico', 'activo'${dispositivoColumna ? ', @dispositivo' : ''});
 
         DECLARE @asistId INT = (SELECT TOP 1 id FROM @TempAsistencia);
 
@@ -963,6 +1008,7 @@ app.post('/api/attendance/check-in', requireAuth(ROLES_WORKER), async (req, res)
 
     lastPings.delete(usuarioId);
     gpsImprecisos.delete(usuarioId);
+    turnoCache.delete(usuarioId);
     const registro = sinFotos(registroResultado.recordset[0]);
     console.log(`🔔 [CHECK_IN] Usuario ${usuarioId} registró ENTRADA (similitud ${bio.sim}%).`);
     emitStaff('attendance_event', { tipo: 'CHECK_IN', usuarioId, asistencia: registro, geocerca: geo, fecha: new Date().toISOString() });
@@ -1035,6 +1081,7 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
 
     lastPings.delete(usuarioId);
     gpsImprecisos.delete(usuarioId);
+    turnoCache.delete(usuarioId);
     const registroCompletado = sinFotos(resActualizacion.recordset[0]);
     console.log(`🔔 [CHECK_OUT] Usuario ${usuarioId} registró SALIDA.`);
     emitStaff('attendance_event', { tipo: 'CHECK_OUT', usuarioId, asistencia: registroCompletado, fecha: new Date().toISOString() });
@@ -1045,17 +1092,94 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
   }
 });
 
+// Salida forzada por un administrador: cierra el turno de un trabajador SIN verificación facial ni foto
+// (olvidó marcar la salida, teléfono sin batería o perdido, falla de la app…). Queda registrada con quién, cuándo y por qué.
+app.post('/api/attendance/:id/force-checkout', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Solicitud inválida' });
+    const motivo = typeof req.body?.motivo === 'string' ? req.body.motivo.trim() : '';
+    if (motivo.length < 3 || motivo.length > 200) {
+      return res.status(400).json({ error: 'Indique el motivo de la salida forzada (entre 3 y 200 caracteres)' });
+    }
+
+    const p = await getPool();
+    const turno = await p.request().input('id', sql.Int, id).query(`
+      SELECT a.id, a.usuario_id, a.estado, u.nombre, u.codigo_empleado
+      FROM RegistroAsistencia a JOIN Usuarios u ON u.id = a.usuario_id
+      WHERE a.id = @id`);
+    if (!turno.recordset.length) return res.status(404).json({ error: 'Turno no encontrado' });
+    const { usuario_id: usuarioId, estado, nombre, codigo_empleado: codigoTrabajador } = turno.recordset[0];
+    if (estado !== 'activo') return res.status(409).json({ error: 'Este turno ya está cerrado' });
+
+    const quien = await p.request().input('id', sql.Int, req.user.id)
+      .query('SELECT nombre, codigo_empleado FROM Usuarios WHERE id = @id');
+    const admin = quien.recordset[0] ? `${quien.recordset[0].codigo_empleado} ${quien.recordset[0].nombre}` : `usuario ${req.user.id}`;
+    const nota = `SALIDA FORZADA por ${admin}: ${motivo}`.slice(0, 500);
+
+    // Como ubicación de salida se usa la última conocida del trabajador (si hay)
+    const ult = await p.request().input('u', sql.Int, usuarioId).input('aid', sql.Int, id).query(
+      'SELECT latitud, longitud, precision FROM UbicacionesEnVivo WHERE usuario_id = @u AND asistencia_id = @aid');
+    const pos = ult.recordset[0];
+    const tienePos = Boolean(pos && validCoords(pos.latitud, pos.longitud));
+    const geo = tienePos ? await detectarEstacionTrabajo(pos.latitud, pos.longitud) : { estacionId: null };
+
+    const r = await p.request()
+      .input('id', sql.Int, id)
+      .input('usuarioId', sql.Int, usuarioId)
+      .input('lat', sql.Float, tienePos ? pos.latitud : null)
+      .input('lng', sql.Float, tienePos ? pos.longitud : null)
+      .input('acc', sql.Float, tienePos ? optNum(pos.precision) : null)
+      .input('estId', sql.Int, geo.estacionId)
+      .input('nota', sql.NVarChar(500), nota)
+      .query(`
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+
+        UPDATE RegistroAsistencia
+        SET hora_salida = GETDATE(),
+            latitud_salida = @lat, longitud_salida = @lng, precision_salida = @acc, estacion_salida_id = @estId,
+            estado = 'completado',
+            horas_totales = ROUND(DATEDIFF(MINUTE, hora_ingreso, GETDATE()) / 60.0, 2),
+            notas = @nota
+        OUTPUT INSERTED.*
+        WHERE id = @id AND estado = 'activo';
+
+        UPDATE UbicacionesEnVivo SET activo = 0, ultimo_ping = GETDATE() WHERE usuario_id = @usuarioId;
+
+        COMMIT TRANSACTION;
+      `);
+    if (!r.recordset.length) return res.status(409).json({ error: 'Este turno ya está cerrado' });
+
+    lastPings.delete(usuarioId);
+    gpsImprecisos.delete(usuarioId);
+    turnoCache.delete(usuarioId);
+    const asistencia = sinFotos(r.recordset[0]);
+    console.log(`🛑 [SALIDA FORZADA] ${admin} cerró el turno ${id} de ${codigoTrabajador} ${nombre}: ${motivo}`);
+    emitStaff('attendance_event', { tipo: 'CHECK_OUT', forzada: true, usuarioId, asistencia, fecha: new Date().toISOString() });
+    // Si el trabajador tiene la app abierta, se entera al instante (el servicio de GPS se detiene solo en su siguiente envío)
+    io.to(`user:${usuarioId}`).emit('turno_cerrado', { forzada: true, fecha: new Date().toISOString() });
+
+    res.json({ exito: true, trabajador: nombre, asistencia });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
 // La app Android pide este token al marcar entrada y se lo entrega al servicio nativo de ubicación
 app.post('/api/location/track-token', requireAuth(ROLES_WORKER), async (req, res) => {
   try {
     const p = await getPool();
-    const r = await p.request().input('usuarioId', sql.Int, req.user.id)
-      .query("SELECT id FROM RegistroAsistencia WHERE usuario_id = @usuarioId AND estado = 'activo'");
-    if (r.recordset.length === 0) {
+    const turno = await turnoActivoDe(p, req.user.id);
+    if (!turno) {
       return res.status(403).json({ error: 'El rastreo solo está permitido durante un turno activo', codigo: 'SIN_TURNO' });
     }
-    const asistenciaId = r.recordset[0].id;
-    const token = signToken({ typ: 'track', sub: req.user.id, aid: asistenciaId }, config.trackTokenHours * 3600, jwtSecret);
+    const dispositivo = dispositivoDe(req);
+    if (esOtroDispositivo(turno, dispositivo)) {
+      return res.status(409).json({ error: MSG_OTRO_DISPOSITIVO, codigo: 'OTRO_DISPOSITIVO' });
+    }
+    const asistenciaId = turno.id;
+    const token = signToken({ typ: 'track', sub: req.user.id, aid: asistenciaId, did: dispositivo || '' }, config.trackTokenHours * 3600, jwtSecret);
     res.json({ token, asistenciaId, vigenciaHoras: config.trackTokenHours });
   } catch (err) {
     fail(res, err);
@@ -1109,14 +1233,17 @@ app.post('/api/location/batch', requireTrackAuth, async (req, res) => {
     validos.sort((a, b) => a.capturadoEn - b.capturadoEn);
 
     const p = await getPool();
-    const resActivo = await p.request().input('usuarioId', sql.Int, usuarioId)
-      .query("SELECT id FROM RegistroAsistencia WHERE usuario_id = @usuarioId AND estado = 'activo'");
+    const turnoBatch = await turnoActivoDe(p, usuarioId);
     // Sin turno, o con un token de otro turno: el celular debe descartar su cola y detener el servicio
-    if (resActivo.recordset.length === 0 || resActivo.recordset[0].id !== req.trackAsistenciaId) {
+    if (!turnoBatch || turnoBatch.id !== req.trackAsistenciaId) {
       lastPings.delete(usuarioId);
       return res.status(403).json({ error: 'El turno de este rastreo ya no está activo', codigo: 'SIN_TURNO' });
     }
-    const asistenciaId = resActivo.recordset[0].id;
+    // El turno pertenece a otro dispositivo: este celular debe dejar de rastrear (y descartar su cola)
+    if (esOtroDispositivo(turnoBatch, req.trackDispositivo)) {
+      return res.status(403).json({ error: MSG_OTRO_DISPOSITIVO, codigo: 'OTRO_DISPOSITIVO' });
+    }
+    const asistenciaId = turnoBatch.id;
 
     appNativaVista.set(usuarioId, Date.now());
     const ultimaAlerta = Number.isInteger(req.body?.ultimaAlerta) && req.body.ultimaAlerta >= 0 ? req.body.ultimaAlerta : 0;
@@ -1216,6 +1343,12 @@ app.post('/api/location/ping', requireAuth(ROLES_WORKER), async (req, res) => {
     const { latitud, longitud, precision, velocidad, rumbo, antiguedadMs } = req.body || {};
     const usuarioId = req.user.id;
     if (!validCoords(latitud, longitud) || !isNum(precision)) return res.status(400).json({ error: 'Parámetros incompletos' });
+
+    // Solo el dispositivo que marcó la entrada puede enviar la ubicación del turno (evita mezclar dos celulares)
+    const turnoPing = await turnoActivoDe(await getPool(), usuarioId);
+    if (esOtroDispositivo(turnoPing, dispositivoDe(req))) {
+      return res.status(409).json({ error: MSG_OTRO_DISPOSITIVO, codigo: 'OTRO_DISPOSITIVO' });
+    }
 
     // Un punto impreciso (o viejo) no se guarda: dejaría al trabajador "ubicado" donde no está
     if (precision > config.gpsMaxPrecisionPing || (isNum(antiguedadMs) && antiguedadMs > config.gpsMaxAgeMs)) {
@@ -1331,7 +1464,7 @@ app.get('/api/attendance/logs', requireAuth(ROLES_STAFF), async (req, res) => {
         CASE WHEN a.foto_ingreso_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_ingreso,
         CASE WHEN a.foto_salida_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_salida,
         a.similitud_facial, a.verificacion_facial_exitosa,
-        a.metodo_validacion, a.estado, a.horas_totales,
+        a.metodo_validacion, a.estado, a.horas_totales, a.notas,
         eIng.nombre as estacion_ingreso_nombre, eSal.nombre as estacion_salida_nombre
       FROM RegistroAsistencia a
       JOIN Usuarios u ON a.usuario_id = u.id
@@ -1731,4 +1864,5 @@ server.listen(config.port, '0.0.0.0', () => {
   }
   checkPinColumn();
   checkPushTables();
+  checkDispositivoColumna();
 });

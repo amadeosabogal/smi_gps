@@ -133,12 +133,14 @@ final class TrackerUploader {
                     res.enviados += filas.size();
                     store.setLastUploadAt(System.currentTimeMillis());
                     store.setLastError(null);
-                } else if (codigo == 403 && respuesta.contains("SIN_TURNO")) {
-                    // El turno terminó (o es de otro turno): estos puntos ya no sirven
+                } else if (codigo == 403 && (respuesta.contains("SIN_TURNO") || respuesta.contains("OTRO_DISPOSITIVO"))) {
+                    // El turno terminó, es de otro turno o pertenece a OTRO dispositivo: estos puntos ya no sirven
                     store.vaciarCola();
                     store.setActive(false);
                     res.turnoTerminado = true;
-                    store.setLastError("El turno ya no está activo");
+                    store.setLastError(respuesta.contains("OTRO_DISPOSITIVO")
+                            ? "El turno está activo en otro dispositivo"
+                            : "El turno ya no está activo");
                     break;
                 } else if (codigo == 401) {
                     store.setTokenInvalid(true);

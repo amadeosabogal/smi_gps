@@ -151,6 +151,12 @@ public class TrackerService extends Service {
             try {
                 TrackerUploader.Resultado r = TrackerUploader.vaciar(this);
                 if (r.turnoTerminado) {
+                    // El servidor cerró el turno (p. ej. salida forzada por un administrador) o es de otro dispositivo
+                    String motivo = TrackerStore.get(this).getLastError();
+                    AlertNotifier.avisar(this, "SMI GPS",
+                            motivo != null && motivo.contains("otro dispositivo")
+                                    ? "Su turno está activo en otro dispositivo: este teléfono dejó de registrar su ubicación."
+                                    : "Su turno ha terminado: su ubicación ya no se registra.");
                     apagar();
                     stopSelf();
                     return;
