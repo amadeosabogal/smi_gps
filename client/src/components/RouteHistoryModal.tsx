@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, Circle, Polyline, CircleMarker, Marker, useMap
 import L from 'leaflet';
 import { Pause, Play, RefreshCw, X } from 'lucide-react';
 import { api } from '../services/api';
+import { AuthImage } from './AuthImage';
 import type { EstacionTrabajo, RecorridoTurno } from '../types';
 
 interface Props {
@@ -15,6 +16,7 @@ const GAP_SEGUNDOS = 90; // más de 90 s sin ningún punto = hueco de señal (ig
 const COLOR_DENTRO = '#1f7a4d';
 const COLOR_FUERA = '#b45f06';
 const COLOR_HUECO = '#64748b';
+const COLOR_ALMUERZO = '#0e7490';
 
 const hora = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -150,17 +152,31 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
   // Cálculos del recorrido
   const info = useMemo(() => {
     if (!data || data.puntos.length === 0) return null;
-    const pts = data.puntos.map((p) => ({ ...p, t: Date.parse(p.fecha), ll: [p.lat, p.lng] as [number, number], dentro: p.estacionId !== null }));
+    // Durante el almuerzo el GPS sigue registrando: esos puntos se dibujan en otro color
+    const intervalos = (data.almuerzos ?? []).map((a) => ({ ini: Date.parse(a.inicio_en), fin: a.fin_en ? Date.parse(a.fin_en) : Infinity }));
+    const pts = data.puntos.map((p) => {
+      const t = Date.parse(p.fecha);
+      return {
+        ...p,
+        t,
+        ll: [p.lat, p.lng] as [number, number],
+        dentro: p.estacionId !== null,
+        alm: intervalos.some((i) => t >= i.ini && t <= i.fin),
+      };
+    });
 
     let distancia = 0;
     let segFuera = 0;
     let segDentro = 0;
+    let segAlmuerzo = 0;
     const huecos: { desde: number; hasta: number; seg: number; i: number }[] = [];
     // Tramos de color: se agrupan los puntos seguidos que están dentro/fuera de una estación; los huecos van aparte (discontinuos)
-    const tramos: { positions: [number, number][]; dentro: boolean }[] = [];
+    const tramos: { positions: [number, number][]; tipo: 'dentro' | 'fuera' | 'almuerzo' }[] = [];
     const lineasHueco: [number, number][][] = [];
-    type Tramo = { positions: [number, number][]; dentro: boolean };
-    let actual: Tramo = { positions: [pts[0].ll], dentro: pts[0].dentro };
+    type Tipo = 'dentro' | 'fuera' | 'almuerzo';
+    type Tramo = { positions: [number, number][]; tipo: Tipo };
+    const tipoDe = (p: { dentro: boolean; alm: boolean }): Tipo => (p.alm ? 'almuerzo' : p.dentro ? 'dentro' : 'fuera');
+    let actual: Tramo = { positions: [pts[0].ll], tipo: tipoDe(pts[0]) };
 
     for (let i = 1; i < pts.length; i++) {
       const p = pts[i];
@@ -172,16 +188,17 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
         huecos.push({ desde: prev.t, hasta: p.t, seg: dt, i });
         lineasHueco.push([prev.ll, p.ll]);
         tramos.push(actual);
-        actual = { positions: [p.ll], dentro: p.dentro };
+        actual = { positions: [p.ll], tipo: tipoDe(p) };
         continue;
       }
-      if (prev.dentro) segDentro += dt;
+      if (prev.alm) segAlmuerzo += dt;
+      else if (prev.dentro) segDentro += dt;
       else segFuera += dt;
       actual.positions.push(p.ll);
-      if (p.dentro !== actual.dentro) {
-        // Cambio dentro/fuera de zona: el punto de cambio cierra el tramo anterior y abre el siguiente (sin dejar espacio)
+      if (tipoDe(p) !== actual.tipo) {
+        // Cambio dentro/fuera de zona o de almuerzo: el punto de cambio cierra el tramo anterior y abre el siguiente (sin dejar espacio)
         tramos.push(actual);
-        actual = { positions: [p.ll], dentro: p.dentro };
+        actual = { positions: [p.ll], tipo: tipoDe(p) };
       }
     }
     tramos.push(actual);
@@ -214,7 +231,7 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
       porHora: segSinCarga >= 1800 ? bajada / (segSinCarga / 3600) : null,
       minCargando: segCargando / 60,
     };
-    return { pts, distancia, segFuera, segDentro, huecos, sinSenal, tramos, lineasHueco, bateria };
+    return { pts, distancia, segFuera, segDentro, segAlmuerzo, huecos, sinSenal, tramos, lineasHueco, bateria };
   }, [data]);
 
   const nombreEstacion = (id: number | null) =>
@@ -288,7 +305,7 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
                     <Polyline
                       key={`t${i}`}
                       positions={t.positions}
-                      pathOptions={{ color: t.dentro ? COLOR_DENTRO : COLOR_FUERA, weight: 4, opacity: 0.9 }}
+                      pathOptions={{ color: t.tipo === 'almuerzo' ? COLOR_ALMUERZO : t.tipo === 'dentro' ? COLOR_DENTRO : COLOR_FUERA, weight: 4, opacity: 0.9 }}
                     />
                   ))}
 
@@ -299,7 +316,7 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
                         key={i}
                         center={p.ll}
                         radius={2.5}
-                        pathOptions={{ color: '#ffffff', weight: 0.5, fillColor: p.dentro ? COLOR_DENTRO : COLOR_FUERA, fillOpacity: 1 }}
+                        pathOptions={{ color: '#ffffff', weight: 0.5, fillColor: p.alm ? COLOR_ALMUERZO : p.dentro ? COLOR_DENTRO : COLOR_FUERA, fillOpacity: 1 }}
                         eventHandlers={{ click: () => { siguiendoFinal.current = false; setReproduciendo(false); setIdx(i); } }}
                       />
                     ))}
@@ -360,11 +377,15 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
                 <span className="font-semibold tabular-nums">{hora(cur.t)}</span> · punto {Math.min(idx, total - 1) + 1} de {total} ·{' '}
                 <span className={cur.dentro ? 'font-semibold text-green-800' : 'font-semibold text-amber-800'}>{nombreEstacion(cur.estacionId)}</span>
                 {cur.precision != null ? ` · ±${Math.round(cur.precision)} m` : ''}
+                {cur.alm ? ' · en almuerzo' : ''}
                 {cur.bateria != null ? ` · batería ${cur.bateria} %${cur.cargando ? ' (cargando)' : ''}` : ''}
               </p>
               <p className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
                 <span><span className="mr-1 inline-block h-2 w-4 align-middle" style={{ background: COLOR_DENTRO }} />Dentro de una estación</span>
                 <span><span className="mr-1 inline-block h-2 w-4 align-middle" style={{ background: COLOR_FUERA }} />Fuera de zona</span>
+                {(data.almuerzos?.length ?? 0) > 0 && (
+                  <span><span className="mr-1 inline-block h-2 w-4 align-middle" style={{ background: COLOR_ALMUERZO }} />En almuerzo</span>
+                )}
                 <span><span className="mr-1 inline-block h-0 w-4 border-t-2 border-dotted align-middle" style={{ borderColor: COLOR_HUECO }} />Sin señal ({'>'} {GAP_SEGUNDOS} s)</span>
               </p>
             </div>
@@ -377,6 +398,7 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
                   ['Distancia recorrida', info.distancia >= 1000 ? `${(info.distancia / 1000).toFixed(2)} km` : `${Math.round(info.distancia)} m`],
                   ['Dentro de estación', duracion(info.segDentro)],
                   ['Fuera de zona', duracion(info.segFuera)],
+                  ...((data.almuerzos?.length ?? 0) > 0 ? [['En almuerzo', duracion(info.segAlmuerzo)]] : []),
                   ['Sin señal', duracion(info.sinSenal)],
                   ['Huecos de señal', String(info.huecos.length)],
                 ].map(([k, v]) => (
@@ -386,6 +408,51 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
                   </div>
                 ))}
               </div>
+
+              {(data.almuerzos?.length ?? 0) > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">Almuerzo</h3>
+                  <p className="text-xs text-slate-500">El GPS siguió registrándose durante el almuerzo (tramo turquesa en el mapa).</p>
+                  {(data.almuerzos ?? []).map((al) => {
+                    const hm = (d: string) => new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    const min = al.fin_en ? Math.round((Date.parse(al.fin_en) - Date.parse(al.inicio_en)) / 60000) : null;
+                    const permitido = data.almuerzoMinutos ?? 60;
+                    return (
+                      <div key={al.id} className="mt-1.5 border border-slate-200 bg-white p-2.5 text-sm">
+                        <p className="text-slate-800">
+                          {hm(al.inicio_en)} → {al.fin_en ? hm(al.fin_en) : 'en curso'}
+                          {min !== null && (
+                            <>
+                              {' '}
+                              · <strong className={min > permitido ? 'text-red-700' : ''}>{min} min</strong> de {permitido}
+                              {min > permitido ? ` (se pasó ${min - permitido} min)` : ''}
+                            </>
+                          )}
+                        </p>
+                        {al.cierre && al.cierre !== 'trabajador' && (
+                          <p className="text-xs text-slate-500">
+                            Cerrado automáticamente por {al.cierre === 'administrador' ? 'una salida forzada del administrador' : 'la salida del turno'}.
+                          </p>
+                        )}
+                        <div className="mt-1.5 flex gap-2">
+                          {al.foto_inicio === 1 && (
+                            <figure className="text-center">
+                              <AuthImage path={`/photos/lunch/${al.id}/in`} alt="Inicio del almuerzo" className="h-16 w-20 border border-slate-200 object-cover" />
+                              <figcaption className="text-[10px] text-slate-500">Inicio</figcaption>
+                            </figure>
+                          )}
+                          {al.foto_fin === 1 && (
+                            <figure className="text-center">
+                              <AuthImage path={`/photos/lunch/${al.id}/out`} alt="Fin del almuerzo" className="h-16 w-20 border border-slate-200 object-cover" />
+                              <figcaption className="text-[10px] text-slate-500">Fin</figcaption>
+                            </figure>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">Batería del teléfono</h3>

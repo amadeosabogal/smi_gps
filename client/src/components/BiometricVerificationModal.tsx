@@ -1,15 +1,24 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { CheckCircle2, AlertTriangle, RefreshCw, X, RotateCcw, Eye } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, RefreshCw, X, RotateCcw, Eye, ArrowLeft, ArrowRight } from 'lucide-react';
 import { faceRecognitionService } from '../services/faceRecognition';
-import { BlinkDetector, type BlinkPhase } from '../services/blinkDetector';
 import { eyeBlinkService } from '../services/eyeBlink';
+import {
+  EjecutorRetos,
+  generarSecuencia,
+  distanciaDescriptores,
+  DISTANCIA_MAX_CONTINUIDAD,
+  TEXTO_RETO,
+  type EstadoRetos,
+  type MotivoFallo,
+  type TipoReto,
+} from '../services/livenessChallenges';
 import { api } from '../services/api';
-import type { Usuario } from '../types';
+import type { Usuario, TipoVerificacion } from '../types';
 
 interface BiometricVerificationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  tipo: 'entrada' | 'salida';
+  tipo: TipoVerificacion;
   worker: Usuario;
   onVerificationSuccess: (result: {
     photoBase64: string;
@@ -19,10 +28,43 @@ interface BiometricVerificationModalProps {
 }
 
 type StepState = 'ready' | 'processing' | 'success' | 'fraud_mismatch' | 'no_face';
+type Fallo = MotivoFallo | 'continuidad' | null;
 
-// Tiempo máximo esperando el parpadeo antes de pedir reintentar (ms)
-const LIVENESS_TIMEOUT_MS = 20000;
-const LIVENESS_PROMPT = 'Mire a la cámara y parpadee una vez para verificar su identidad.';
+const ETIQUETA_TIPO: Record<TipoVerificacion, string> = {
+  entrada: 'Entrada',
+  salida: 'Salida',
+  almuerzo_inicio: 'Inicio de almuerzo',
+  almuerzo_fin: 'Fin de almuerzo',
+};
+
+const MENSAJE_FALLO: Record<Exclude<Fallo, null>, string> = {
+  tiempo: 'No se completó el movimiento a tiempo. Se le pedirá algo distinto: intente de nuevo.',
+  sin_rostro: 'Se perdió de vista su rostro. Colóquelo dentro del recuadro e intente de nuevo.',
+  inestable: 'No se pudo comenzar. Mire de frente a la cámara, con buena luz, y quédese quieto un momento.',
+  continuidad: 'No se pudo confirmar que fuera la misma persona durante toda la prueba. Intente de nuevo.',
+};
+
+// Intentos fallidos de la prueba de vida: tras 3 en 10 minutos se bloquea 2 minutos y los intentos quedan en la auditoría
+const CLAVE_FALLOS = 'smi_liveness_fallos';
+const MAX_FALLOS = 3;
+const VENTANA_FALLOS_MS = 10 * 60 * 1000;
+const BLOQUEO_MS = 2 * 60 * 1000;
+
+const leerFallos = (): number[] => {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(CLAVE_FALLOS) || '[]') as number[];
+    return v.filter((t) => Date.now() - t < VENTANA_FALLOS_MS);
+  } catch {
+    return [];
+  }
+};
+const guardarFallos = (v: number[]) => {
+  try {
+    sessionStorage.setItem(CLAVE_FALLOS, JSON.stringify(v));
+  } catch {
+    /* almacenamiento no disponible */
+  }
+};
 
 export const BiometricVerificationModal: React.FC<BiometricVerificationModalProps> = ({
   isOpen,
@@ -37,9 +79,12 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
   // Estados del modal
   const [step, setStep] = useState<StepState>('ready');
-  const [statusMessage, setStatusMessage] = useState<string>(LIVENESS_PROMPT);
-  const [blinkPhase, setBlinkPhase] = useState<BlinkPhase | 'no_face'>('calibrating');
-  const [livenessTimedOut, setLivenessTimedOut] = useState<boolean>(false);
+  const [statusMessage, setStatusMessage] = useState<string>('Iniciando cámara frontal…');
+  const [secuencia, setSecuencia] = useState<TipoReto[]>(() => generarSecuencia());
+  const [retoEstado, setRetoEstado] = useState<EstadoRetos | null>(null);
+  const [fallo, setFallo] = useState<Fallo>(null);
+  const [bloqueadoHasta, setBloqueadoHasta] = useState<number>(0);
+  const [ahoraTick, setAhoraTick] = useState<number>(Date.now());
   const [livenessDebug, setLivenessDebug] = useState<string>('');
   const [blinkModuleState, setBlinkModuleState] = useState<'loading' | 'ready' | 'error'>(
     eyeBlinkService.isReady() ? 'ready' : 'loading'
@@ -48,6 +93,9 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cameraReady, setCameraReady] = useState<boolean>(false);
+
+  // Descriptor facial del inicio de la prueba: al final debe ser la MISMA cara (evita cambiar de persona o de foto)
+  const descInicioRef = useRef<number[] | null>(null);
 
   // Detener hardware de la cámara
   const stopCamera = useCallback(() => {
@@ -60,26 +108,30 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     }
   }, []);
 
+  // Reinicia la prueba con una secuencia NUEVA de movimientos
+  const nuevaPrueba = useCallback(() => {
+    setSecuencia(generarSecuencia());
+    setRetoEstado(null);
+    setFallo(null);
+    descInicioRef.current = null;
+  }, []);
+
   // Reanudar cámara en vivo (descongelar) de forma instantánea
   const resumeCamera = useCallback(() => {
     setCapturedPhoto(null);
     setStep('ready');
     setErrorMessage(null);
-    setLivenessTimedOut(false);
-    setBlinkPhase('calibrating');
-    setStatusMessage(LIVENESS_PROMPT);
-
+    nuevaPrueba();
     if (videoRef.current) {
       videoRef.current.play().catch(() => {});
     }
-  }, []);
+  }, [nuevaPrueba]);
 
   // Iniciar cámara frontal
   const startCamera = useCallback(async () => {
     setCameraReady(false);
     setCapturedPhoto(null);
-    setLivenessTimedOut(false);
-    setBlinkPhase('calibrating');
+    nuevaPrueba();
     setStep('ready');
     setStatusMessage('Iniciando cámara frontal…');
     setErrorMessage(null);
@@ -89,7 +141,6 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
       try {
         await videoRef.current.play();
         setCameraReady(true);
-        setStatusMessage(LIVENESS_PROMPT);
         return;
       } catch {
         // Fallback a reinicio normal
@@ -120,7 +171,6 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
         videoRef.current.onloadedmetadata = () => {
           videoRef.current?.play().catch(() => {});
           setCameraReady(true);
-          setStatusMessage(LIVENESS_PROMPT);
         };
       }
     } catch (err: any) {
@@ -134,11 +184,19 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
       );
       setStatusMessage('Error de cámara');
     }
-  }, []);
+  }, [nuevaPrueba]);
 
   useEffect(() => {
     if (isOpen) {
       startCamera();
+      // Si hay un bloqueo vigente por demasiados intentos, se respeta
+      try {
+        const hasta = Number(sessionStorage.getItem(CLAVE_FALLOS + '_hasta') || 0);
+        setAhoraTick(Date.now());
+        setBloqueadoHasta(hasta > Date.now() ? hasta : 0);
+      } catch {
+        setBloqueadoHasta(0);
+      }
     } else {
       stopCamera();
     }
@@ -147,6 +205,16 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
       stopCamera();
     };
   }, [isOpen, startCamera, stopCamera]);
+
+  // Cuenta regresiva del bloqueo
+  useEffect(() => {
+    if (!bloqueadoHasta) return;
+    const t = setInterval(() => {
+      setAhoraTick(Date.now());
+      if (Date.now() >= bloqueadoHasta) setBloqueadoHasta(0);
+    }, 1000);
+    return () => clearInterval(t);
+  }, [bloqueadoHasta]);
 
   // Capturar fotograma optimizado con marca de agua (escala eficiente máx 640px para cero lag)
   const captureSnapshot = (): string | null => {
@@ -185,6 +253,28 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     return canvas.toDataURL('image/jpeg', 0.82);
   };
 
+  // Anota un intento fallido de la prueba de vida. Desde el 2.º seguido queda en la auditoría de fraude con su foto
+  // (así se ve, por ejemplo, un video frente a la cámara), y al 3.º se bloquea unos minutos.
+  const registrarFallo = (motivo: Fallo) => {
+    const lista = [...leerFallos(), Date.now()];
+    guardarFallos(lista);
+    if (lista.length >= 2) {
+      const foto = captureSnapshot();
+      if (foto) api.reportLivenessFail(foto, String(motivo || 'desconocido'), lista.length).catch(() => {});
+    }
+    if (lista.length >= MAX_FALLOS) {
+      const hasta = Date.now() + BLOQUEO_MS;
+      try {
+        sessionStorage.setItem(CLAVE_FALLOS + '_hasta', String(hasta));
+      } catch {
+        /* almacenamiento no disponible */
+      }
+      guardarFallos([]);
+      setAhoraTick(Date.now());
+      setBloqueadoHasta(hasta);
+    }
+  };
+
   // Botón Principal: Disparar captura y validar inmediatamente sin pantalla negra
   const handleCaptureAndValidate = async () => {
     if (step === 'processing' || !videoRef.current || !cameraReady) return;
@@ -216,6 +306,21 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
         return;
       }
 
+      const liveDescriptor = Array.from(detection.descriptor);
+
+      // 2b. Continuidad: la cara del final debe ser la misma que la del inicio de la prueba
+      if (descInicioRef.current) {
+        const dist = distanciaDescriptores(descInicioRef.current, liveDescriptor);
+        if (dist > DISTANCIA_MAX_CONTINUIDAD) {
+          console.warn(`[BIOMETRÍA] la cara cambió durante la prueba (distancia ${dist.toFixed(2)})`);
+          registrarFallo('continuidad');
+          setFallo('continuidad');
+          setStep('ready');
+          video.play().catch(() => {});
+          return;
+        }
+      }
+
       // 3. Generar snapshot fotográfico en memoria con marca de agua
       const snapshot = captureSnapshot();
       if (!snapshot) {
@@ -225,9 +330,8 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
       }
       setCapturedPhoto(snapshot);
 
-      const liveDescriptor = Array.from(detection.descriptor);
-
       const finishSuccess = (similarity: number, message: string) => {
+        guardarFallos([]);
         setSimilarityScore(similarity);
         setStep('success');
         setStatusMessage(message);
@@ -274,31 +378,26 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
   // Siempre apunta a la versión más reciente del handler (evita closures obsoletas en el loop)
   const captureHandlerRef = useRef(handleCaptureAndValidate);
   captureHandlerRef.current = handleCaptureAndValidate;
+  const registrarFalloRef = useRef(registrarFallo);
+  registrarFalloRef.current = registrarFallo;
 
-  // Prueba de vida: el usuario debe parpadear. Al detectarlo se dispara la captura y validación.
+  // Prueba de vida con RETOS ALEATORIOS: se pide una secuencia de movimientos distinta cada vez (girar la cabeza,
+  // sonreír, abrir la boca, parpadear dos veces). Un video grabado no sabe qué se va a pedir.
   useEffect(() => {
-    if (!isOpen || !cameraReady || step !== 'ready' || livenessTimedOut || blinkModuleState !== 'ready') return;
+    if (!isOpen || !cameraReady || step !== 'ready' || fallo || blinkModuleState !== 'ready' || bloqueadoHasta > Date.now()) return;
 
     let cancelled = false;
-    // Se alimenta con "apertura" = 1 - cierre (blendshape): ~0.9 abierto, <0.5 cerrado
-    const detector = new BlinkDetector({
-      closedRatio: 0.7,
-      reopenRatio: 0.85,
-      minValidOpenEAR: 0.5,
-    });
-    const startedAt = Date.now();
+    const ejecutor = new EjecutorRetos(secuencia);
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    let capturandoInicio = false;
+    let ultimoEmit = 0;
+    let ultimaClave = '';
     let frames = 0;
     let fps = 0;
     let fpsStart = Date.now();
 
     const loop = async () => {
       while (!cancelled) {
-        if (Date.now() - startedAt > LIVENESS_TIMEOUT_MS) {
-          setLivenessTimedOut(true);
-          return;
-        }
-
         const video = videoRef.current;
         if (!video || video.paused || video.readyState < 2) {
           await sleep(100);
@@ -306,30 +405,57 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
         }
 
         try {
-          const reading = eyeBlinkService.read(video);
+          const r = eyeBlinkService.read(video);
           if (cancelled) return;
+          const ahora = performance.now();
+          const lectura =
+            r && r.turn !== null ? { cerrado: r.closed, sonrisa: r.smile, boca: r.jaw, giro: r.turn } : null;
+          const est = ejecutor.actualizar(lectura, ahora);
 
-          if (!reading) {
-            detector.reset(); // sin rostro no se acumula progreso
-            setBlinkPhase('no_face');
-            setLivenessDebug('sin rostro detectado');
-          } else {
-            const phase = detector.update(1 - reading.closed);
-            setBlinkPhase(phase);
-            frames += 1;
-            const elapsed = (Date.now() - fpsStart) / 1000;
-            if (elapsed >= 1) {
-              fps = Math.round(frames / elapsed);
-              frames = 0;
-              fpsStart = Date.now();
-            }
-            setLivenessDebug(
-              `ojos cerrados ${reading.closed.toFixed(2)} · cierre>${(1 - detector.closedThreshold).toFixed(2)} · ${fps} fps`
-            );
-            if (phase === 'blinked') {
-              captureHandlerRef.current();
-              return;
-            }
+          // Se actualiza la pantalla solo cuando algo cambia (o cada ~120 ms para la barra de tiempo)
+          const clave = `${est.fase}|${est.indice}|${est.esperandoReposo}|${est.parpadeos}|${lectura ? 1 : 0}`;
+          if (clave !== ultimaClave || ahora - ultimoEmit > 120) {
+            ultimaClave = clave;
+            ultimoEmit = ahora;
+            setRetoEstado(est);
+          }
+
+          frames += 1;
+          const elapsed = (Date.now() - fpsStart) / 1000;
+          if (elapsed >= 1) {
+            fps = Math.round(frames / elapsed);
+            frames = 0;
+            fpsStart = Date.now();
+          }
+          setLivenessDebug(
+            lectura
+              ? `giro ${lectura.giro.toFixed(2)} · sonrisa ${lectura.sonrisa.toFixed(2)} · boca ${lectura.boca.toFixed(2)} · ojos ${lectura.cerrado.toFixed(2)} · ${fps} fps`
+              : 'sin rostro detectado'
+          );
+
+          // Descriptor del INICIO de la prueba (rostro de frente y en reposo), para comprobar la continuidad al final
+          if (est.fase === 'reto' && !descInicioRef.current && !capturandoInicio && lectura) {
+            capturandoInicio = true;
+            faceRecognitionService
+              .detectFullFace(video)
+              .then((d) => {
+                if (d && !cancelled) descInicioRef.current = Array.from(d.descriptor);
+              })
+              .catch(() => {})
+              .finally(() => {
+                capturandoInicio = false;
+              });
+          }
+
+          if (est.fase === 'fallo') {
+            const motivo = est.motivo ?? 'tiempo';
+            registrarFalloRef.current(motivo);
+            setFallo(motivo);
+            return;
+          }
+          if (est.fase === 'listo') {
+            captureHandlerRef.current();
+            return;
           }
         } catch (err) {
           console.warn('Error en prueba de vida:', err);
@@ -342,22 +468,25 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     return () => {
       cancelled = true;
     };
-  }, [isOpen, cameraReady, step, livenessTimedOut, blinkModuleState]);
+  }, [isOpen, cameraReady, step, fallo, blinkModuleState, secuencia, bloqueadoHasta]);
 
-  const livenessHint =
-    blinkModuleState === 'loading'
-      ? 'Preparando la verificación de vida. La primera vez puede tardar un poco.'
-      : blinkModuleState === 'error'
-      ? 'No se pudo cargar la verificación de vida. Recargue la página e intente de nuevo.'
-      : livenessTimedOut
-      ? 'No se detectó el parpadeo. Presione "Reintentar" y parpadee mirando a la cámara.'
-      : blinkPhase === 'no_face'
-      ? 'No se ve su rostro. Colóquelo dentro del recuadro.'
-      : blinkPhase === 'eyes_closed'
-      ? 'Parpadeo detectado…'
-      : blinkPhase === 'waiting_blink'
-      ? 'Rostro detectado. Parpadee ahora.'
-      : LIVENESS_PROMPT;
+  // ---- Textos de la pantalla ----
+  const bloqueado = bloqueadoHasta > ahoraTick;
+  const segBloqueo = Math.max(0, Math.ceil((bloqueadoHasta - ahoraTick) / 1000));
+
+  const instruccion = (() => {
+    if (bloqueado) return `Demasiados intentos fallidos. Espere ${segBloqueo} s para volver a intentar.`;
+    if (blinkModuleState === 'loading') return 'Preparando la verificación de vida. La primera vez puede tardar un poco.';
+    if (blinkModuleState === 'error') return 'No se pudo cargar la verificación de vida. Recargue la página e intente de nuevo.';
+    if (fallo) return MENSAJE_FALLO[fallo];
+    const e = retoEstado;
+    if (!e || e.fase === 'calibrando') return 'Mire de frente a la cámara, con el rostro dentro del recuadro, y quédese quieto.';
+    if (e.fase === 'reto' && e.esperandoReposo) return 'Quédese quieto y mire de frente…';
+    if (e.fase === 'reto' && e.reto) return TEXTO_RETO[e.reto] + (e.reto === 'parpadear2' ? ` (${e.parpadeos}/2)` : '');
+    if (e.fase === 'frontal') return 'Muy bien. Ahora mire de frente y quédese quieto.';
+    if (e.fase === 'listo') return 'Verificando…';
+    return 'Mire a la cámara.';
+  })();
 
   if (!isOpen) return null;
 
@@ -365,7 +494,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
   // Color del mensaje de estado según el paso
   const statusTone =
-    errorMessage || step === 'no_face' || step === 'fraud_mismatch'
+    errorMessage || step === 'no_face' || step === 'fraud_mismatch' || fallo || bloqueado
       ? 'border-l-red-700 bg-red-50 text-red-900'
       : step === 'success'
       ? 'border-l-green-700 bg-green-50 text-green-900'
@@ -378,15 +507,16 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     onClose();
   };
 
+  const retoActivo = retoEstado && retoEstado.fase === 'reto' && !retoEstado.esperandoReposo && !fallo ? retoEstado.reto : null;
+  const porcentajeTiempo = retoEstado && retoActivo ? Math.max(0, Math.min(100, (retoEstado.restanteMs / 4500) * 100)) : 0;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-3 sm:p-4">
       <div className="flex w-full max-w-md flex-col overflow-hidden border border-slate-300 bg-white shadow-xl">
         {/* Cabecera */}
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div>
-            <h3 className="text-base font-semibold text-slate-900">
-              Reconocimiento facial · {tipo === 'entrada' ? 'Entrada' : 'Salida'}
-            </h3>
+            <h3 className="text-base font-semibold text-slate-900">Reconocimiento facial · {ETIQUETA_TIPO[tipo]}</h3>
             <p className="text-sm text-slate-600">
               {worker.nombre} ({worker.codigo_empleado})
             </p>
@@ -413,6 +543,31 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
           {step === 'ready' && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <div className={`h-[78%] w-[52%] border-2 ${cameraReady ? 'border-white/90' : 'border-dashed border-white/50'}`} />
+            </div>
+          )}
+
+          {/* Flechas de giro (la vista es como un espejo: la flecha apunta hacia donde debe girar) */}
+          {retoActivo === 'giro_izq' && (
+            <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 bg-brand-600 p-3 text-white shadow-lg">
+              <ArrowLeft className="h-8 w-8" />
+            </div>
+          )}
+          {retoActivo === 'giro_der' && (
+            <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 bg-brand-600 p-3 text-white shadow-lg">
+              <ArrowRight className="h-8 w-8" />
+            </div>
+          )}
+
+          {/* Reto en curso: instrucción grande sobre la imagen */}
+          {step === 'ready' && cameraReady && retoActivo && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 bg-brand-700/90 px-3 py-2 text-center text-white">
+              <p className="text-xs opacity-80">
+                Paso {(retoEstado?.indice ?? 0) + 1} de {retoEstado?.total}
+              </p>
+              <p className="text-lg font-semibold leading-tight">{instruccion}</p>
+              <div className="mt-1.5 h-1 w-full bg-white/25">
+                <div className="h-full bg-white transition-[width] duration-100" style={{ width: `${porcentajeTiempo}%` }} />
+              </div>
             </div>
           )}
 
@@ -451,22 +606,18 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
                 <RefreshCw className="h-4 w-4 animate-spin" />
                 {statusMessage}
               </span>
+            ) : step === 'ready' && cameraReady ? (
+              errorMessage || instruccion
             ) : (
-              errorMessage || (step === 'ready' && cameraReady ? livenessHint : statusMessage)
+              errorMessage || statusMessage
             )}
           </div>
 
-          {/* Prueba de vida: la captura es automática tras el parpadeo */}
-          {step === 'ready' && (
+          {/* Indicador de la prueba de vida */}
+          {step === 'ready' && !fallo && !bloqueado && (
             <div
               className={`flex items-center justify-center gap-2 border px-3 py-2.5 text-sm font-medium ${
-                !cameraReady
-                  ? 'border-slate-300 bg-slate-50 text-slate-500'
-                  : livenessTimedOut
-                  ? 'border-red-300 bg-red-50 text-red-800'
-                  : blinkPhase === 'eyes_closed'
-                  ? 'border-brand-600 bg-brand-600 text-white'
-                  : 'border-brand-200 bg-brand-50 text-brand-800'
+                !cameraReady ? 'border-slate-300 bg-slate-50 text-slate-500' : 'border-brand-200 bg-brand-50 text-brand-800'
               }`}
             >
               <Eye className="h-4 w-4" />
@@ -479,17 +630,15 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
                   ? 'Preparando verificación…'
                   : blinkModuleState === 'error'
                   ? 'Verificación no disponible'
-                  : livenessTimedOut
-                  ? 'Tiempo agotado'
-                  : 'Esperando parpadeo…'}
+                  : 'Siga las indicaciones en pantalla'}
               </span>
             </div>
           )}
 
-          {step === 'ready' && livenessTimedOut && (
-            <button type="button" onClick={resumeCamera} className="btn-primary w-full">
+          {step === 'ready' && (fallo || bloqueado) && (
+            <button type="button" onClick={resumeCamera} disabled={bloqueado} className="btn-primary w-full disabled:opacity-50">
               <RotateCcw className="h-4 w-4" />
-              Reintentar
+              {bloqueado ? `Espere ${segBloqueo} s` : 'Reintentar con otra secuencia'}
             </button>
           )}
 

@@ -108,6 +108,9 @@ export const AdminPage: React.FC = () => {
   const [logsSearch, setLogsSearch] = useState<string>('');
   const [exporting, setExporting] = useState<boolean>(false);
 
+  // Almuerzo: minutos permitidos (los define el servidor)
+  const [almuerzoMinutos, setAlmuerzoMinutos] = useState<number>(60);
+
   // Salida forzada de un trabajador (sin verificación facial)
   const [forzarTarget, setForzarTarget] = useState<{ asistenciaId: number; nombre: string; codigo: string } | null>(null);
   const [forzarMotivo, setForzarMotivo] = useState<string>('');
@@ -267,6 +270,7 @@ export const AdminPage: React.FC = () => {
     try {
       const liveData = await api.getLiveDashboard();
       setLiveWorkers(liveData.trabajadores);
+      if (liveData.almuerzoMinutos) setAlmuerzoMinutos(liveData.almuerzoMinutos);
       setSummary(liveData.resumen);
       if (liveData.ahora) setClockOffsetMs(new Date(liveData.ahora).getTime() - Date.now());
     } catch (err) {
@@ -471,6 +475,12 @@ export const AdminPage: React.FC = () => {
       setWorkstations((prev) => (prev.some((s) => s.id === newStation.id) ? prev : [...prev, newStation]));
     });
 
+    // Inicio o fin de un almuerzo: se refresca el estado en vivo y el historial
+    socket.on('almuerzo_event', () => {
+      loadLive();
+      scheduleHeavyReload();
+    });
+
     socket.on('workstations_deleted', ({ id }: { id: number }) => {
       setWorkstations((prev) => prev.filter((s) => s.id !== id));
     });
@@ -488,6 +498,7 @@ export const AdminPage: React.FC = () => {
       socket.off('alerta_leida');
       socket.off('workstations_updated');
       socket.off('workstations_deleted');
+      socket.off('almuerzo_event');
     };
   }, [isAdminAuthenticated, loadLive, loadHeavy, refreshLists, scheduleHeavyReload]);
 
@@ -617,7 +628,8 @@ export const AdminPage: React.FC = () => {
       const q = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
       const headers = [
         'ID', 'Código Empleado', 'Trabajador', 'Cargo', 'Hora Ingreso', 'Estación Ingreso', 'Hora Salida',
-        'Estación Salida', 'Horas Totales', 'Similitud Facial', 'Biometría Exitosa', 'Método Validación', 'Estado',
+        'Estación Salida', 'Horas Totales', 'Almuerzo Inicio', 'Almuerzo Fin', 'Almuerzo (min)',
+        'Similitud Facial', 'Biometría Exitosa', 'Método Validación', 'Estado',
       ];
       const rows = todos.map((log) => [
         log.id,
@@ -629,6 +641,9 @@ export const AdminPage: React.FC = () => {
         q(log.hora_salida ? new Date(log.hora_salida).toLocaleString() : 'En curso'),
         q(log.estacion_salida_nombre),
         log.horas_totales ?? '',
+        q(log.almuerzo_inicio ? new Date(log.almuerzo_inicio).toLocaleString() : ''),
+        q(log.almuerzo_fin ? new Date(log.almuerzo_fin).toLocaleString() : ''),
+        log.almuerzo_inicio && log.almuerzo_fin ? Math.round((Date.parse(log.almuerzo_fin) - Date.parse(log.almuerzo_inicio)) / 60000) : '',
         log.similitud_facial !== null && log.similitud_facial !== undefined ? `${Math.round(log.similitud_facial)}%` : '',
         log.verificacion_facial_exitosa ? 'SI' : 'NO',
         q(log.metodo_validacion || 'facial_biometrico'),
@@ -950,12 +965,13 @@ export const AdminPage: React.FC = () => {
             )}
 
             {/* Indicadores */}
-            <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-5">
               {[
                 { label: 'Personal total', value: summary.totalTrabajadores, accent: 'border-t-slate-400', color: 'text-slate-900' },
                 { label: 'En turno', value: summary.activosConteo, accent: 'border-t-brand-600', color: 'text-brand-700' },
                 { label: 'En su estación', value: summary.dentroEstacionConteo, accent: 'border-t-green-700', color: 'text-green-800' },
                 { label: 'Fuera de zona o en tránsito', value: summary.fueraEstacionConteo, accent: 'border-t-amber-600', color: 'text-amber-800' },
+                { label: 'En almuerzo', value: summary.almuerzoConteo ?? 0, accent: 'border-t-cyan-700', color: 'text-cyan-800' },
               ].map((s) => (
                 <div key={s.label} className={`panel border-t-4 p-4 ${s.accent}`}>
                   <p className="text-sm text-slate-600">{s.label}</p>
@@ -1092,7 +1108,7 @@ export const AdminPage: React.FC = () => {
                     ) : (
                       filteredWorkers.map((worker) => {
                         const isActive = worker.estado_asistencia === 'activo';
-                        const isInside = worker.dentro_de_estacion;
+                        const isInside = worker.dentro_de_estacion || Boolean(worker.en_almuerzo);
 
                         return (
                           <div
@@ -1115,7 +1131,9 @@ export const AdminPage: React.FC = () => {
                                 <p className="text-xs text-slate-500">{worker.cargo}</p>
                               </div>
 
-                              {isActive ? (
+                              {isActive && worker.en_almuerzo ? (
+                                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-cyan-100 text-cyan-900">En almuerzo</span>
+                              ) : isActive ? (
                                 <span
                                   className={`px-2 py-0.5 rounded-full text-xs font-bold ${
  isInside
@@ -1263,6 +1281,16 @@ export const AdminPage: React.FC = () => {
                                       )}
                                     </span>
                                   </div>
+                                  {worker.en_almuerzo && (() => {
+                                    const min = Math.floor((worker.almuerzo_segundos ?? 0) / 60);
+                                    const exceso = min - almuerzoMinutos;
+                                    return (
+                                      <p className={`mt-1 text-xs font-semibold ${exceso > 0 ? 'text-red-700' : 'text-cyan-800'}`}>
+                                        Almuerzo: {min} min de {almuerzoMinutos}
+                                        {exceso > 0 ? ` · se pasó ${exceso} min` : ''}. El GPS sigue activo.
+                                      </p>
+                                    );
+                                  })()}
                                   {sinSenal && bat !== null && bat <= 10 && !cargando && (
                                     <p className="mt-1 text-xs text-red-700">
                                       Última batería registrada: {bat} %. Es posible que el teléfono se haya apagado.
@@ -1358,6 +1386,7 @@ export const AdminPage: React.FC = () => {
                         <th className="px-4 py-3">Estación Salida</th>
                         <th className="px-4 py-3 text-center">Foto Salida</th>
                         <th className="px-4 py-3 text-center">Biometría</th>
+                        <th className="px-4 py-3">Almuerzo</th>
                         <th className="px-4 py-3 text-right">Horas</th>
                         <th className="px-4 py-3 text-center">Estado</th>
                         <th className="sticky right-0 bg-slate-50 px-4 py-3 text-center shadow-[-6px_0_6px_-6px_rgba(15,23,42,0.25)]">Recorrido</th>
@@ -1366,7 +1395,7 @@ export const AdminPage: React.FC = () => {
                     <tbody className="divide-y divide-slate-100">
                       {filteredLogs.length === 0 ? (
                         <tr>
-                          <td colSpan={13} className="px-4 py-8 text-center text-slate-400">
+                          <td colSpan={14} className="px-4 py-8 text-center text-slate-400">
                             No hay registros de asistencia en este rango.
                           </td>
                         </tr>
@@ -1494,6 +1523,20 @@ export const AdminPage: React.FC = () => {
                               ) : (
                                 <span className="text-xs text-slate-400 italic">No requerida</span>
                               )}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-slate-700">
+                              {log.almuerzo_inicio
+                                ? (() => {
+                                    const hm = (d: string) => new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                    if (!log.almuerzo_fin) return <span className="font-semibold text-cyan-800">{hm(log.almuerzo_inicio)} · en almuerzo</span>;
+                                    const min = Math.round((Date.parse(log.almuerzo_fin) - Date.parse(log.almuerzo_inicio)) / 60000);
+                                    return (
+                                      <span className={min > almuerzoMinutos ? 'font-semibold text-red-700' : ''}>
+                                        {hm(log.almuerzo_inicio)}–{hm(log.almuerzo_fin)} ({min} min)
+                                      </span>
+                                    );
+                                  })()
+                                : <span className="text-slate-400">—</span>}
                             </td>
                             <td className="px-4 py-3 text-right font-mono font-bold text-slate-900">
                               {log.horas_totales !== null ? `${log.horas_totales}h` : 'En curso'}

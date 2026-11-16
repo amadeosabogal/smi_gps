@@ -163,6 +163,24 @@ async function checkBateriaColumnas() {
   }
 }
 
+// ¿Existe ya la tabla del almuerzo? (se crea con: npm run migrate-almuerzo). Sin ella el almuerzo no está habilitado.
+let almuerzoTabla = false;
+async function checkAlmuerzoTabla() {
+  try {
+    const p = await getPool();
+    const r = await p.request().query("SELECT OBJECT_ID('AlmuerzosTurno', 'U') AS id");
+    almuerzoTabla = Boolean(r.recordset[0].id);
+    if (!almuerzoTabla) console.warn('⚠️ El almuerzo aún no está habilitado: ejecuta  npm run migrate-almuerzo  y reinicia.');
+  } catch (err) {
+    console.warn('No se pudo comprobar la tabla del almuerzo:', err.message);
+  }
+}
+function almuerzoNoDisponible(res) {
+  if (almuerzoTabla) return false;
+  res.status(503).json({ error: 'El almuerzo aún no está habilitado en el servidor. Avise al administrador.', codigo: 'ALMUERZO_NO_DISPONIBLE' });
+  return true;
+}
+
 process.on('uncaughtException', (err) => {
   console.error('🚨 Excepción no capturada:', err);
 });
@@ -775,13 +793,42 @@ async function registrarFraude({ usuarioId, tipoEvento, foto, similitud, notas }
   }
 }
 
+// Para qué se puede pedir una verificación facial (cada tipo genera su propio ticket de un solo uso)
+const TIPOS_VERIFICACION = ['entrada', 'salida', 'almuerzo_inicio', 'almuerzo_fin'];
+
+// Intentos fallidos de la prueba de vida (retos aleatorios): el celular avisa desde el 2.º seguido. Se guarda la foto del
+// intento para que un administrador pueda ver, por ejemplo, un video o una foto frente a la cámara.
+const lastLivenessFail = new Map(); // usuarioId -> instante del último aviso
+app.post('/api/biometric/liveness-fail', requireAuth(ROLES_WORKER), async (req, res) => {
+  try {
+    const { foto, motivo, intentos } = req.body || {};
+    if (!validPhoto(foto)) return res.status(400).json({ error: 'Solicitud inválida' });
+    const userId = req.user.id;
+    const previo = lastLivenessFail.get(userId) || 0;
+    if (Date.now() - previo < 15_000) return res.json({ exito: true, omitido: true }); // no se llena la auditoría
+    lastLivenessFail.set(userId, Date.now());
+    const m = typeof motivo === 'string' ? motivo.replace(/[^a-z_]/gi, '').slice(0, 30) : 'desconocido';
+    const n = Number.isInteger(intentos) && intentos > 0 && intentos < 100 ? intentos : 0;
+    await registrarFraude({
+      usuarioId: userId,
+      tipoEvento: 'FALLA_PRUEBA_VIDA',
+      foto,
+      similitud: 0,
+      notas: `Prueba de vida fallida (${m}); intentos fallidos seguidos: ${n}`,
+    });
+    res.json({ exito: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
 // El cliente envía el descriptor de su rostro; el servidor lo compara con el enrolado.
 // Si coincide, devuelve un ticket de un solo uso que exige check-in / check-out.
 app.post('/api/biometric/verify', requireAuth(ROLES_WORKER), async (req, res) => {
   try {
     const { descriptor, foto, tipo } = req.body || {};
     const live = parseDescriptor(descriptor);
-    if (!live || !validPhoto(foto) || !['entrada', 'salida'].includes(tipo)) {
+    if (!live || !validPhoto(foto) || !TIPOS_VERIFICACION.includes(tipo)) {
       return res.status(400).json({ error: 'Datos biométricos inválidos' });
     }
 
@@ -830,7 +877,7 @@ app.post('/api/biometric/enrol', requireAuth(ROLES_WORKER), async (req, res) => 
 
     const { descriptor, foto, tipo } = req.body || {};
     const live = parseDescriptor(descriptor);
-    if (!live || !validPhoto(foto) || !['entrada', 'salida'].includes(tipo)) {
+    if (!live || !validPhoto(foto) || !TIPOS_VERIFICACION.includes(tipo)) {
       return res.status(400).json({ error: 'Datos biométricos inválidos' });
     }
 
@@ -865,10 +912,12 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
         a.id as asistencia_id, a.hora_ingreso, CASE WHEN a.foto_ingreso_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_ingreso, a.estado as estado_asistencia,
         uv.latitud, uv.longitud, uv.precision, uv.ultimo_ping, uv.dentro_de_estacion,
         ${bateriaColumnas ? 'uv.bateria, uv.cargando,' : ''}
+        ${almuerzoTabla ? 'al.inicio_en AS almuerzo_inicio, DATEDIFF(SECOND, al.inicio_en, GETDATE()) AS almuerzo_segundos,' : ''}
         DATEDIFF(SECOND, uv.ultimo_ping, GETDATE()) AS segundos_sin_ping,
         e.id as estacion_id, e.nombre as estacion_nombre, e.codigo as estacion_codigo, e.color as estacion_color
       FROM Usuarios u
       LEFT JOIN RegistroAsistencia a ON u.id = a.usuario_id AND a.estado = 'activo'
+      ${almuerzoTabla ? 'LEFT JOIN AlmuerzosTurno al ON al.asistencia_id = a.id AND al.fin_en IS NULL' : ''}
       LEFT JOIN UbicacionesEnVivo uv ON u.id = uv.usuario_id AND uv.activo = 1
       LEFT JOIN EstacionesTrabajo e ON uv.estacion_actual_id = e.id
       WHERE u.rol = 'trabajador' AND u.activo = 1
@@ -881,11 +930,13 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
       return {
         ...w,
         ...(pushTablasListas ? { push_activo: w.push_activo || appNativaActiva(w.usuario_id) ? 1 : 0 } : {}),
+        en_almuerzo: Boolean(w.almuerzo_inicio),
         gps_imprecisa: Boolean(imp && ahoraMs - imp.t < 60_000),
       };
     });
     const activos = trabajadores.filter((w) => w.estado_asistencia === 'activo');
     const dentro = activos.filter((w) => w.dentro_de_estacion).length;
+    const almorzando = activos.filter((w) => w.en_almuerzo).length;
 
     // Hora actual del servidor de base de datos: referencia para calcular el tiempo en turno
     const reloj = await p.request().query('SELECT GETDATE() AS ahora');
@@ -896,8 +947,11 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
         totalTrabajadores: trabajadores.length,
         activosConteo: activos.length,
         dentroEstacionConteo: dentro,
-        fueraEstacionConteo: activos.length - dentro,
+        // quien está almorzando no cuenta como "fuera de zona"
+        fueraEstacionConteo: activos.filter((w) => !w.dentro_de_estacion && !w.en_almuerzo).length,
+        almuerzoConteo: almorzando,
       },
+      almuerzoMinutos: config.almuerzoMinutos,
       trabajadores,
     });
   } catch (err) {
@@ -923,7 +977,28 @@ app.get('/api/me/shift', requireAuth(ROLES_WORKER), async (req, res) => {
     if (!fila) return res.json(null);
     // El identificador del dispositivo no sale del servidor: solo se informa si este teléfono es el del turno
     const { dispositivo_id: atado, ...resto } = fila;
-    res.json({ ...resto, en_otro_dispositivo: Boolean(atado && atado !== dispositivoDe(req)) });
+
+    // Almuerzo del turno: si está almorzando (y desde hace cuánto, con el reloj del servidor) y cuántos lleva
+    let almuerzo = null;
+    if (almuerzoTabla) {
+      const a = await p.request().input('a', sql.Int, fila.asistencia_id).query(`
+        SELECT COUNT(*) AS total,
+               MAX(CASE WHEN fin_en IS NULL THEN 1 ELSE 0 END) AS abierto,
+               DATEDIFF(SECOND, MIN(CASE WHEN fin_en IS NULL THEN inicio_en END), GETDATE()) AS segundos_abierto,
+               ISNULL(SUM(DATEDIFF(SECOND, inicio_en, fin_en)), 0) AS segundos_usados
+        FROM AlmuerzosTurno WHERE asistencia_id = @a`);
+      const x = a.recordset[0];
+      almuerzo = {
+        habilitado: true,
+        enAlmuerzo: x.abierto === 1,
+        segundosEnAlmuerzo: x.abierto === 1 ? x.segundos_abierto : 0,
+        realizados: x.total - (x.abierto === 1 ? 1 : 0),
+        maximo: config.almuerzosPorTurno,
+        permitidoMinutos: config.almuerzoMinutos,
+        segundosUsados: x.segundos_usados,
+      };
+    }
+    res.json({ ...resto, en_otro_dispositivo: Boolean(atado && atado !== dispositivoDe(req)), almuerzo });
   } catch (err) {
     fail(res, err);
   }
@@ -1091,6 +1166,7 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
         WHERE id = @id;
 
         UPDATE UbicacionesEnVivo SET activo = 0, ultimo_ping = GETDATE() WHERE usuario_id = @usuarioId;
+        ${almuerzoTabla ? "UPDATE AlmuerzosTurno SET fin_en = GETDATE(), cierre = 'salida' WHERE asistencia_id = @id AND fin_en IS NULL;" : ''}
 
         COMMIT TRANSACTION;
       `);
@@ -1103,6 +1179,104 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
     emitStaff('attendance_event', { tipo: 'CHECK_OUT', usuarioId, asistencia: registroCompletado, fecha: new Date().toISOString() });
 
     res.json({ exito: true, mensaje: 'Salida registrada y rastreo GPS desactivado', asistencia: registroCompletado });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ----------------- ALMUERZO (dentro del turno; el GPS NO se detiene) -----------------
+// Iniciar y terminar el almuerzo exigen verificación facial. Las horas del turno no se descuentan: solo se registra.
+app.post('/api/attendance/lunch/start', requireAuth(ROLES_WORKER), async (req, res) => {
+  try {
+    if (almuerzoNoDisponible(res)) return;
+    const { foto, ticket } = req.body || {};
+    if (!validPhoto(foto)) return res.status(400).json({ error: 'La foto de evidencia es OBLIGATORIA para iniciar el almuerzo' });
+    const usuarioId = req.user.id;
+
+    const p = await getPool();
+    const turno = await turnoActivoDe(p, usuarioId);
+    if (!turno) return res.status(400).json({ error: 'No hay un turno activo', codigo: 'SIN_TURNO' });
+    if (esOtroDispositivo(turno, dispositivoDe(req))) return res.status(409).json({ error: MSG_OTRO_DISPOSITIVO, codigo: 'OTRO_DISPOSITIVO' });
+
+    const est = await p.request().input('a', sql.Int, turno.id)
+      .query('SELECT COUNT(*) AS total, SUM(CASE WHEN fin_en IS NULL THEN 1 ELSE 0 END) AS abiertos FROM AlmuerzosTurno WHERE asistencia_id = @a');
+    const { total, abiertos } = est.recordset[0];
+    if (abiertos > 0) return res.status(400).json({ error: 'Ya está en su almuerzo', codigo: 'YA_EN_ALMUERZO' });
+    if (total >= config.almuerzosPorTurno) {
+      return res.status(400).json({ error: 'Ya registró su almuerzo en este turno', codigo: 'ALMUERZO_YA_USADO' });
+    }
+
+    const bio = consumeBioTicket(ticket, usuarioId, 'almuerzo_inicio');
+    if (!bio) return res.status(403).json({ error: 'Verificación facial requerida o vencida. Repite el reconocimiento facial.' });
+
+    // El GPS sigue su curso con normalidad; como lugar del almuerzo se toma la última ubicación conocida
+    const ult = await p.request().input('u', sql.Int, usuarioId).input('aid', sql.Int, turno.id).query(
+      'SELECT latitud, longitud FROM UbicacionesEnVivo WHERE usuario_id = @u AND asistencia_id = @aid');
+    const pos = ult.recordset[0];
+    const tienePos = Boolean(pos && validCoords(pos.latitud, pos.longitud));
+
+    const r = await p.request()
+      .input('a', sql.Int, turno.id)
+      .input('u', sql.Int, usuarioId)
+      .input('sim', sql.Float, bio.sim)
+      .input('foto', sql.NVarChar(sql.MAX), foto)
+      .input('lat', sql.Float, tienePos ? pos.latitud : null)
+      .input('lng', sql.Float, tienePos ? pos.longitud : null)
+      .query(`
+        INSERT INTO AlmuerzosTurno (asistencia_id, usuario_id, similitud_inicio, foto_inicio_url, latitud_inicio, longitud_inicio)
+        OUTPUT INSERTED.id, INSERTED.inicio_en
+        VALUES (@a, @u, @sim, @foto, @lat, @lng)`);
+    console.log(`🍽️ [ALMUERZO] Usuario ${usuarioId} inició su almuerzo (turno ${turno.id}).`);
+    emitStaff('almuerzo_event', { tipo: 'INICIO', usuarioId, asistenciaId: turno.id, fecha: new Date().toISOString() });
+    res.json({ exito: true, almuerzo: { id: r.recordset[0].id, permitidoMinutos: config.almuerzoMinutos } });
+  } catch (err) {
+    if (esTurnoDuplicado(err)) return res.status(400).json({ error: 'Ya está en su almuerzo', codigo: 'YA_EN_ALMUERZO' });
+    fail(res, err);
+  }
+});
+
+app.post('/api/attendance/lunch/end', requireAuth(ROLES_WORKER), async (req, res) => {
+  try {
+    if (almuerzoNoDisponible(res)) return;
+    const { foto, ticket } = req.body || {};
+    if (!validPhoto(foto)) return res.status(400).json({ error: 'La foto de evidencia es OBLIGATORIA para terminar el almuerzo' });
+    const usuarioId = req.user.id;
+
+    const p = await getPool();
+    const turno = await turnoActivoDe(p, usuarioId);
+    if (!turno) return res.status(400).json({ error: 'No hay un turno activo', codigo: 'SIN_TURNO' });
+    if (esOtroDispositivo(turno, dispositivoDe(req))) return res.status(409).json({ error: MSG_OTRO_DISPOSITIVO, codigo: 'OTRO_DISPOSITIVO' });
+
+    const abierto = await p.request().input('a', sql.Int, turno.id)
+      .query('SELECT TOP 1 id FROM AlmuerzosTurno WHERE asistencia_id = @a AND fin_en IS NULL');
+    if (!abierto.recordset.length) return res.status(400).json({ error: 'No está en su almuerzo', codigo: 'NO_EN_ALMUERZO' });
+
+    const bio = consumeBioTicket(ticket, usuarioId, 'almuerzo_fin');
+    if (!bio) return res.status(403).json({ error: 'Verificación facial requerida o vencida. Repite el reconocimiento facial.' });
+
+    const ult = await p.request().input('u', sql.Int, usuarioId).input('aid', sql.Int, turno.id).query(
+      'SELECT latitud, longitud FROM UbicacionesEnVivo WHERE usuario_id = @u AND asistencia_id = @aid');
+    const pos = ult.recordset[0];
+    const tienePos = Boolean(pos && validCoords(pos.latitud, pos.longitud));
+
+    const r = await p.request()
+      .input('id', sql.Int, abierto.recordset[0].id)
+      .input('sim', sql.Float, bio.sim)
+      .input('foto', sql.NVarChar(sql.MAX), foto)
+      .input('lat', sql.Float, tienePos ? pos.latitud : null)
+      .input('lng', sql.Float, tienePos ? pos.longitud : null)
+      .query(`
+        UPDATE AlmuerzosTurno
+        SET fin_en = GETDATE(), similitud_fin = @sim, foto_fin_url = @foto, latitud_fin = @lat, longitud_fin = @lng, cierre = 'trabajador'
+        OUTPUT DATEDIFF(SECOND, INSERTED.inicio_en, INSERTED.fin_en) AS segundos
+        WHERE id = @id AND fin_en IS NULL`);
+    if (!r.recordset.length) return res.status(409).json({ error: 'El almuerzo ya estaba cerrado' });
+
+    const segundos = r.recordset[0].segundos;
+    const minutos = Math.round(segundos / 60);
+    console.log(`🍽️ [ALMUERZO] Usuario ${usuarioId} terminó su almuerzo (${minutos} min).`);
+    emitStaff('almuerzo_event', { tipo: 'FIN', usuarioId, asistenciaId: turno.id, segundos, fecha: new Date().toISOString() });
+    res.json({ exito: true, almuerzo: { segundos, minutos, permitidoMinutos: config.almuerzoMinutos, excedido: segundos > config.almuerzoMinutos * 60 } });
   } catch (err) {
     fail(res, err);
   }
@@ -1162,6 +1336,7 @@ app.post('/api/attendance/:id/force-checkout', requireAuth(ROLES_ADMIN), async (
         WHERE id = @id AND estado = 'activo';
 
         UPDATE UbicacionesEnVivo SET activo = 0, ultimo_ping = GETDATE() WHERE usuario_id = @usuarioId;
+        ${almuerzoTabla ? "UPDATE AlmuerzosTurno SET fin_en = GETDATE(), cierre = 'administrador' WHERE asistencia_id = @id AND fin_en IS NULL;" : ''}
 
         COMMIT TRANSACTION;
       `);
@@ -1494,11 +1669,13 @@ app.get('/api/attendance/logs', requireAuth(ROLES_STAFF), async (req, res) => {
         CASE WHEN a.foto_salida_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_salida,
         a.similitud_facial, a.verificacion_facial_exitosa,
         a.metodo_validacion, a.estado, a.horas_totales, a.notas,
+        ${almuerzoTabla ? 'alm.id AS almuerzo_id, alm.inicio_en AS almuerzo_inicio, alm.fin_en AS almuerzo_fin,' : ''}
         eIng.nombre as estacion_ingreso_nombre, eSal.nombre as estacion_salida_nombre
       FROM RegistroAsistencia a
       JOIN Usuarios u ON a.usuario_id = u.id
       LEFT JOIN EstacionesTrabajo eIng ON a.estacion_ingreso_id = eIng.id
       LEFT JOIN EstacionesTrabajo eSal ON a.estacion_salida_id = eSal.id
+      ${almuerzoTabla ? 'OUTER APPLY (SELECT TOP 1 x.id, x.inicio_en, x.fin_en FROM AlmuerzosTurno x WHERE x.asistencia_id = a.id ORDER BY x.id DESC) alm' : ''}
       ${filtro}
       ORDER BY a.hora_ingreso DESC, a.id DESC
       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;
@@ -1741,8 +1918,20 @@ app.get('/api/attendance/:id/route', requireAuth(ROLES_STAFF), async (req, res) 
       ORDER BY fecha_registro ASC, id ASC`);
     const reloj = await p.request().query('SELECT GETDATE() AS ahora');
 
+    let almuerzos = [];
+    if (almuerzoTabla) {
+      const al = await p.request().input('id', sql.Int, id).query(`
+        SELECT id, inicio_en, fin_en, cierre,
+               CASE WHEN foto_inicio_url IS NULL THEN 0 ELSE 1 END AS foto_inicio,
+               CASE WHEN foto_fin_url IS NULL THEN 0 ELSE 1 END AS foto_fin
+        FROM AlmuerzosTurno WHERE asistencia_id = @id ORDER BY id ASC`);
+      almuerzos = al.recordset;
+    }
+
     res.json({
       ahora: reloj.recordset[0].ahora,
+      almuerzoMinutos: config.almuerzoMinutos,
+      almuerzos,
       asistencia: turno.recordset[0],
       puntos: puntos.recordset.map((r) => ({
         lat: r.latitud,
@@ -1766,6 +1955,20 @@ const idParam = (v) => {
   const n = Number.parseInt(v, 10);
   return Number.isInteger(n) && n > 0 ? n : null;
 };
+
+app.get('/api/photos/lunch/:id/:kind', requireAuth(ROLES_STAFF), async (req, res) => {
+  try {
+    if (!almuerzoTabla) return res.status(404).json({ error: 'Foto no disponible' });
+    const id = idParam(req.params.id);
+    const columna = { in: 'foto_inicio_url', out: 'foto_fin_url' }[req.params.kind];
+    if (!id || !columna) return res.status(400).json({ error: 'Solicitud inválida' });
+    const p = await getPool();
+    const r = await p.request().input('id', sql.Int, id).query(`SELECT ${columna} AS foto FROM AlmuerzosTurno WHERE id = @id`);
+    enviarFoto(res, r.recordset[0]?.foto);
+  } catch (err) {
+    fail(res, err);
+  }
+});
 
 app.get('/api/photos/attendance/:id/:kind', requireAuth(ROLES_STAFF), async (req, res) => {
   try {
@@ -1897,4 +2100,5 @@ server.listen(config.port, '0.0.0.0', () => {
   checkPushTables();
   checkDispositivoColumna();
   checkBateriaColumnas();
+  checkAlmuerzoTabla();
 });

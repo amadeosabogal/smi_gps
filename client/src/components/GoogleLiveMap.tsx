@@ -327,7 +327,8 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
       if (!worker.latitud || !worker.longitud) return;
 
       const sinSenal = (worker.segundos_sin_ping ?? 0) > 90; // sin puntos GPS desde hace más de 90 s
-      const markerColor = sinSenal ? '#64748b' : worker.dentro_de_estacion ? '#1f7a4d' : '#b45f06';
+      // Verde en estación, ámbar fuera, gris sin señal y turquesa si está en su almuerzo (el GPS sigue activo)
+      const markerColor = sinSenal ? '#64748b' : worker.en_almuerzo ? '#0e7490' : worker.dentro_de_estacion ? '#1f7a4d' : '#b45f06';
       const initials = worker.nombre_usuario
         .split(' ')
         .slice(0, 2)
@@ -387,6 +388,10 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
         <div className="flex items-center space-x-2">
           <span className="inline-block h-3 w-3 bg-amber-600" style={{ borderRadius: '50%' }}></span>
           <span>Trabajador fuera de zona</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <span className="inline-block h-3 w-3" style={{ borderRadius: '50%', backgroundColor: '#0e7490' }}></span>
+          <span>En almuerzo</span>
         </div>
         <div className="flex items-center space-x-2">
           <span className="inline-block h-3 w-3 bg-slate-500" style={{ borderRadius: '50%' }}></span>

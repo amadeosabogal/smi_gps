@@ -48,6 +48,9 @@ export interface RegistroAsistencia {
   estado: 'activo' | 'completado';
   horas_totales: number | null;
   notas?: string;
+  almuerzo_id?: number | null;
+  almuerzo_inicio?: string | null;
+  almuerzo_fin?: string | null;
 }
 
 export interface AuditoriaFraudeFacial {
@@ -77,6 +80,9 @@ export interface DatosTrabajadorEnVivo {
   push_activo?: boolean | number; // ¿tiene las alertas activadas en su celular?
   segundos_sin_ping?: number | null; // antigüedad de la última señal GPS recibida
   gps_imprecisa?: boolean; // el celular está enviando una ubicación demasiado imprecisa
+  en_almuerzo?: boolean; // está en su almuerzo (el GPS sigue registrándose)
+  almuerzo_segundos?: number | null; // desde hace cuánto
+  almuerzo_inicio?: string | null;
   bateria?: number | null; // % de batería del teléfono (solo app Android)
   cargando?: boolean | number | null; // ¿está conectado al cargador?
   estado_asistencia: 'activo' | null;
@@ -96,6 +102,7 @@ export interface ResumenDashboard {
   activosConteo: number;
   dentroEstacionConteo: number;
   fueraEstacionConteo: number;
+  almuerzoConteo?: number;
 }
 
 // Modo "colocar estación en el mapa": el administrador marca el punto con el cursor y ajusta el radio
@@ -123,8 +130,19 @@ export interface PuntoRecorrido {
   cargando?: boolean | null;
 }
 
+export interface AlmuerzoTurno {
+  id: number;
+  inicio_en: string;
+  fin_en: string | null;
+  cierre: string | null;
+  foto_inicio: number;
+  foto_fin: number;
+}
+
 export interface RecorridoTurno {
   ahora: string;
+  almuerzoMinutos?: number;
+  almuerzos?: AlmuerzoTurno[];
   asistencia: {
     id: number;
     usuario_id: number;
@@ -137,3 +155,6 @@ export interface RecorridoTurno {
   };
   puntos: PuntoRecorrido[];
 }
+
+// Qué se está verificando con el rostro (cada uno tiene su propio ticket de un solo uso en el servidor)
+export type TipoVerificacion = 'entrada' | 'salida' | 'almuerzo_inicio' | 'almuerzo_fin';

@@ -7,6 +7,7 @@ import type {
   DatosTrabajadorEnVivo,
   AuditoriaFraudeFacial,
   RecorridoTurno,
+  TipoVerificacion,
 } from '../types';
 
 // URL base del API:
@@ -194,7 +195,7 @@ export const api = {
   async verifyFace(
     descriptor: number[],
     foto: string,
-    tipo: 'entrada' | 'salida'
+    tipo: TipoVerificacion
   ): Promise<{ isMatch: boolean; similarity: number }> {
     try {
       const data = await request('/biometric/verify', { method: 'POST', body: JSON.stringify({ descriptor, foto, tipo }) });
@@ -206,7 +207,28 @@ export const api = {
     }
   },
 
-  async enrolSelf(descriptor: number[], foto: string, tipo: 'entrada' | 'salida'): Promise<{ similarity: number }> {
+  /** Inicia el almuerzo (exige la verificación facial recién hecha). El GPS no se detiene. */
+  async lunchStart(foto: string): Promise<{ exito: boolean; almuerzo: { id: number; permitidoMinutos: number } }> {
+    const ticket = bioTicket;
+    bioTicket = null;
+    return request('/attendance/lunch/start', { method: 'POST', body: JSON.stringify({ foto, ticket }) });
+  },
+
+  /** Termina el almuerzo (exige la verificación facial recién hecha). */
+  async lunchEnd(
+    foto: string
+  ): Promise<{ exito: boolean; almuerzo: { segundos: number; minutos: number; permitidoMinutos: number; excedido: boolean } }> {
+    const ticket = bioTicket;
+    bioTicket = null;
+    return request('/attendance/lunch/end', { method: 'POST', body: JSON.stringify({ foto, ticket }) });
+  },
+
+  /** Un intento fallido de la prueba de vida (desde el 2.º seguido): queda en la auditoría de fraude con su foto. */
+  async reportLivenessFail(foto: string, motivo: string, intentos: number): Promise<void> {
+    await request('/biometric/liveness-fail', { method: 'POST', body: JSON.stringify({ foto, motivo, intentos }) });
+  },
+
+  async enrolSelf(descriptor: number[], foto: string, tipo: TipoVerificacion): Promise<{ similarity: number }> {
     const data = await request('/biometric/enrol', { method: 'POST', body: JSON.stringify({ descriptor, foto, tipo }) });
     bioTicket = data.ticket;
     return { similarity: data.similarity };
@@ -253,7 +275,12 @@ export const api = {
   },
 
   // ----- Resumen en Vivo -----
-  async getLiveDashboard(): Promise<{ ahora?: string; resumen: ResumenDashboard; trabajadores: DatosTrabajadorEnVivo[] }> {
+  async getLiveDashboard(): Promise<{
+    ahora?: string;
+    almuerzoMinutos?: number;
+    resumen: ResumenDashboard;
+    trabajadores: DatosTrabajadorEnVivo[];
+  }> {
     return request('/dashboard/live');
   },
 

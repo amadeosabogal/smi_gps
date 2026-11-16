@@ -58,6 +58,9 @@ export const config = {
   trackTokenHours: Number(env.TRACK_TOKEN_HOURS || 18),
   // Archivo version.json que se publica junto al APK; la app Android lo consulta para avisar de versiones nuevas
   androidVersionFile: env.ANDROID_VERSION_FILE || '/var/www/smi_descargas/version.json',
+  // Almuerzo dentro del turno: minutos permitidos (el panel marca en rojo al que se pasa) y cuántos por turno
+  almuerzoMinutos: Number(env.ALMUERZO_MINUTOS || 60),
+  almuerzosPorTurno: Number(env.ALMUERZOS_POR_TURNO || 1),
   sessionHours: Number(env.SESSION_HOURS || 12),
   adminSessionHours: Number(env.ADMIN_SESSION_HOURS || 8),
   // TLS opcional directo en Node (si no se usa un proxy inverso como nginx/Caddy)

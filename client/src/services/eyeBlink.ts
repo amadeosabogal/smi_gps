@@ -1,17 +1,32 @@
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
-// Lectura de cierre de ojos con MediaPipe Face Landmarker (blendshapes eyeBlinkLeft/Right).
-// Se usa solo para la prueba de vida: la identidad se sigue comparando con face-api.
+// Lectura del rostro con MediaPipe Face Landmarker (blendshapes + puntos de la cara) para la prueba de vida:
+// cierre de ojos, sonrisa, apertura de la boca y giro de la cabeza.
+// La identidad se sigue comparando con face-api.
 // Los archivos se sirven localmente (/mediapipe/wasm y /models/face_landmarker.task), sin depender de CDN.
 
 const WASM_PATH = '/mediapipe/wasm';
 const MODEL_PATH = '/models/face_landmarker.task';
+
+// Sentido del giro de la cabeza. Con la cámara frontal SIN espejo, al girar hacia la IZQUIERDA de la persona la nariz se
+// mueve hacia el lado derecho de la imagen (el valor sube). Si en algún teléfono el reto "gire a la izquierda" exigiera
+// girar a la derecha, poner esto en true. Con ?debug en la dirección se ve el valor de "giro" en tiempo real.
+const INVERTIR_GIRO = false;
 
 export interface EyeReading {
   /** 0 = ojo completamente abierto, 1 = completamente cerrado (promedio de ambos ojos) */
   closed: number;
   left: number;
   right: number;
+  /** Sonrisa 0..1 (promedio de las dos comisuras) */
+  smile: number;
+  /** Apertura de la boca 0..1 */
+  jaw: number;
+  /**
+   * Posición de la nariz entre los bordes de la cara en la imagen sin espejo (0.5 = de frente).
+   * Sube al girar la cabeza hacia la izquierda de la persona. null si no se pudo calcular.
+   */
+  turn: number | null;
 }
 
 class EyeBlinkService {
@@ -56,7 +71,7 @@ class EyeBlinkService {
     return this.landmarker !== null;
   }
 
-  /** Devuelve el cierre de ojos del fotograma actual, o null si no hay rostro. */
+  /** Devuelve la lectura del rostro del fotograma actual, o null si no hay rostro. */
   public read(video: HTMLVideoElement): EyeReading | null {
     if (!this.landmarker) return null;
 
@@ -70,11 +85,30 @@ class EyeBlinkService {
 
     let left = 0;
     let right = 0;
+    let smileL = 0;
+    let smileR = 0;
+    let jaw = 0;
     for (const c of shapes) {
       if (c.categoryName === 'eyeBlinkLeft') left = c.score;
       else if (c.categoryName === 'eyeBlinkRight') right = c.score;
+      else if (c.categoryName === 'mouthSmileLeft') smileL = c.score;
+      else if (c.categoryName === 'mouthSmileRight') smileR = c.score;
+      else if (c.categoryName === 'jawOpen') jaw = c.score;
     }
-    return { closed: (left + right) / 2, left, right };
+
+    // Giro de la cabeza: posición de la punta de la nariz (punto 1) entre los bordes de la cara (puntos 234 y 454)
+    let turn: number | null = null;
+    const lm = result.faceLandmarks?.[0];
+    if (lm && lm[1] && lm[234] && lm[454]) {
+      const xl = Math.min(lm[234].x, lm[454].x);
+      const xr = Math.max(lm[234].x, lm[454].x);
+      if (xr - xl > 1e-4) {
+        const ratio = (lm[1].x - xl) / (xr - xl);
+        turn = INVERTIR_GIRO ? 1 - ratio : ratio;
+      }
+    }
+
+    return { closed: (left + right) / 2, left, right, smile: (smileL + smileR) / 2, jaw, turn };
   }
 }
 

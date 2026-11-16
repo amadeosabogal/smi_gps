@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api, auth } from '../services/api';
 import { socket, connectSocket, disconnectSocket } from '../services/socket';
 import { geolocationService, type CoordsData } from '../services/geolocation';
-import type { Usuario, EstacionTrabajo } from '../types';
+import type { Usuario, EstacionTrabajo, TipoVerificacion } from '../types';
 import { ShieldCheck, AlertTriangle, Compass, RefreshCw, ScanFace } from 'lucide-react';
 import { BiometricVerificationModal } from '../components/BiometricVerificationModal';
 import { faceRecognitionService } from '../services/faceRecognition';
@@ -46,7 +46,17 @@ export const WorkerPage: React.FC = () => {
 
   // Modal de Cámara de Evidencia Obligatoria
   const [isCameraOpen, setIsCameraOpen] = useState<boolean>(false);
-  const [cameraTipo, setCameraTipo] = useState<'entrada' | 'salida'>('entrada');
+  const [cameraTipo, setCameraTipo] = useState<TipoVerificacion>('entrada');
+  // Almuerzo dentro del turno (el GPS NO se detiene mientras tanto)
+  const [almuerzo, setAlmuerzo] = useState<{
+    enAlmuerzo: boolean;
+    segundosBase: number;
+    desde: number;
+    realizados: number;
+    maximo: number;
+    permitidoMinutos: number;
+  } | null>(null);
+  const [tickAlmuerzo, setTickAlmuerzo] = useState<number>(0);
 
   // Estado de permisos y ubicación GPS del Celular
   const [gpsPermissionStatus, setGpsPermissionStatus] = useState<'granted' | 'prompt' | 'denied'>('prompt');
@@ -173,6 +183,20 @@ export const WorkerPage: React.FC = () => {
           if (st) setDetectedStation(st);
         }
 
+        const alm = workerInfo.almuerzo;
+        setAlmuerzo(
+          alm?.habilitado
+            ? {
+                enAlmuerzo: Boolean(alm.enAlmuerzo),
+                segundosBase: alm.segundosEnAlmuerzo || 0,
+                desde: Date.now(),
+                realizados: alm.realizados || 0,
+                maximo: alm.maximo || 1,
+                permitidoMinutos: alm.permitidoMinutos || 60,
+              }
+            : null
+        );
+
         if (workerInfo.en_otro_dispositivo) {
           // El turno es de otro teléfono: aquí no se rastrea (el servidor ignoraría esos puntos)
           setTurnoEnOtroDispositivo(true);
@@ -186,6 +210,7 @@ export const WorkerPage: React.FC = () => {
         }
       } else {
         setTurnoEnOtroDispositivo(false);
+        setAlmuerzo(null);
         setIsActiveShift(false);
         setShiftSeconds(0);
         geolocationService.stopTracking();
@@ -216,6 +241,13 @@ export const WorkerPage: React.FC = () => {
       document.removeEventListener('visibilitychange', refrescar);
     };
   }, [isActiveShift, checkShiftStatus]);
+
+  // Reloj del almuerzo
+  useEffect(() => {
+    if (!almuerzo?.enAlmuerzo) return;
+    const t = setInterval(() => setTickAlmuerzo((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [almuerzo?.enAlmuerzo]);
 
   // Shift timer
   useEffect(() => {
@@ -662,6 +694,33 @@ export const WorkerPage: React.FC = () => {
     }
   };
 
+  // Inicio / fin del almuerzo (con verificación facial). El rastreo GPS continúa sin cambios.
+  const handleAlmuerzoConFoto = async (tipo: 'almuerzo_inicio' | 'almuerzo_fin', fotoBase64: string) => {
+    setActionLoading(true);
+    try {
+      if (tipo === 'almuerzo_inicio') {
+        const r = await api.lunchStart(fotoBase64);
+        if ('vibrate' in navigator) navigator.vibrate([100, 50, 100]);
+        alert(
+          `Almuerzo iniciado. Tiene ${r.almuerzo.permitidoMinutos} minutos. Su ubicación sigue registrándose. Al volver, toque "Terminar almuerzo".`
+        );
+      } else {
+        const r = await api.lunchEnd(fotoBase64);
+        if ('vibrate' in navigator) navigator.vibrate([150]);
+        alert(
+          r.almuerzo.excedido
+            ? `Almuerzo terminado: ${r.almuerzo.minutos} min. Se pasó del tiempo permitido (${r.almuerzo.permitidoMinutos} min).`
+            : `Almuerzo terminado (${r.almuerzo.minutos} min). Buen provecho y buen turno.`
+        );
+      }
+    } catch (err: any) {
+      alert(err.message || 'No se pudo registrar el almuerzo');
+    } finally {
+      setActionLoading(false);
+      checkShiftStatus();
+    }
+  };
+
   // Handle Check-Out con Reconocimiento Facial Biométrico y GPS Real
   const handleCheckOutWithPhoto = async (fotoBase64: string, similarity = 100, isVerified = true) => {
     if (!selectedUser) return;
@@ -946,20 +1005,71 @@ export const WorkerPage: React.FC = () => {
 
             <div className="px-4 pb-4">
               {isActiveShift ? (
-                <button
-                  onClick={() => iniciarMarcacion('salida')}
-                  disabled={actionLoading}
-                  className="btn-danger w-full py-3.5 text-base"
-                >
-                  {actionLoading ? (
-                    <RefreshCw className="h-5 w-5 animate-spin" />
-                  ) : (
-                    <>
-                      <ScanFace className="h-5 w-5" />
-                      Registrar salida
-                    </>
+                <div className="space-y-2.5">
+                  {/* Almuerzo en curso: reloj y botón para terminarlo */}
+                  {almuerzo?.enAlmuerzo && !turnoEnOtroDispositivo && (() => {
+                    void tickAlmuerzo;
+                    const seg = almuerzo.segundosBase + Math.floor((Date.now() - almuerzo.desde) / 1000);
+                    const excedido = seg > almuerzo.permitidoMinutos * 60;
+                    return (
+                      <div className={`border-l-4 p-3 ${excedido ? 'border-l-red-700 bg-red-50' : 'border-l-brand-600 bg-brand-50'}`}>
+                        <p className="text-sm font-semibold text-slate-900">En almuerzo</p>
+                        <p className={`mt-0.5 text-3xl font-semibold tabular-nums ${excedido ? 'text-red-800' : 'text-brand-800'}`}>
+                          {formatTime(seg)}
+                        </p>
+                        <p className={`mt-0.5 text-sm ${excedido ? 'font-semibold text-red-800' : 'text-slate-600'}`}>
+                          {excedido
+                            ? `Se pasó del tiempo permitido (${almuerzo.permitidoMinutos} min). Termine su almuerzo.`
+                            : `Tiene ${almuerzo.permitidoMinutos} minutos. Su ubicación sigue registrándose.`}
+                        </p>
+                        <button
+                          onClick={() => {
+                            setCameraTipo('almuerzo_fin');
+                            setIsCameraOpen(true);
+                          }}
+                          disabled={actionLoading}
+                          className="btn-primary mt-2.5 w-full py-3 text-base"
+                        >
+                          <ScanFace className="h-5 w-5" />
+                          Terminar almuerzo
+                        </button>
+                      </div>
+                    );
+                  })()}
+
+                  <button
+                    onClick={() => iniciarMarcacion('salida')}
+                    disabled={actionLoading}
+                    className="btn-danger w-full py-3.5 text-base"
+                  >
+                    {actionLoading ? (
+                      <RefreshCw className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <>
+                        <ScanFace className="h-5 w-5" />
+                        Registrar salida
+                      </>
+                    )}
+                  </button>
+
+                  {almuerzo && !almuerzo.enAlmuerzo && !turnoEnOtroDispositivo && (
+                    almuerzo.realizados < almuerzo.maximo ? (
+                      <button
+                        onClick={() => {
+                          setCameraTipo('almuerzo_inicio');
+                          setIsCameraOpen(true);
+                        }}
+                        disabled={actionLoading}
+                        className="btn-secondary w-full py-3 text-base"
+                      >
+                        <ScanFace className="h-5 w-5" />
+                        Iniciar almuerzo
+                      </button>
+                    ) : (
+                      <p className="text-center text-sm text-slate-600">Su almuerzo de este turno ya fue registrado.</p>
+                    )
                   )}
-                </button>
+                </div>
               ) : (
                 <button
                   onClick={() => iniciarMarcacion('entrada')}
@@ -1149,8 +1259,10 @@ export const WorkerPage: React.FC = () => {
             setIsCameraOpen(false);
             if (cameraTipo === 'entrada') {
               handleCheckInWithPhoto(result.photoBase64, result.similarity);
-            } else {
+            } else if (cameraTipo === 'salida') {
               handleCheckOutWithPhoto(result.photoBase64, result.similarity, result.isVerified);
+            } else {
+              handleAlmuerzoConFoto(cameraTipo, result.photoBase64);
             }
           }}
         />
