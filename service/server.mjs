@@ -223,6 +223,8 @@ const PING_MIN_GAP_MS = 5_000;      // como mínimo 5 s entre puntos guardados..
 const PING_MIN_MOVE_METERS = 10;    // ...salvo que se haya movido más de 10 m
 const lastPings = new Map();        // usuarioId -> { t, lat, lng, geo }
 const gpsImprecisos = new Map();    // usuarioId -> { t, precision } (último punto descartado por impreciso)
+const appNativaVista = new Map();   // usuarioId -> ms del último lote recibido de la app Android (sirve para saber si puede recibir alertas)
+const appNativaActiva = (usuarioId, ventanaMs = 120_000) => Date.now() - (appNativaVista.get(usuarioId) || 0) < ventanaMs;
 
 // Emitir solo a administradores/supervisores conectados
 const emitStaff = (event, payload) => io.to('staff').emit(event, payload);
@@ -248,6 +250,20 @@ function requireAuth(roles) {
     req.user = { id: payload.sub, rol: payload.rol };
     next();
   };
+}
+
+// Token de rastreo: lo guarda el servicio nativo de Android para enviar ubicaciones aunque la app esté
+// cerrada o la pantalla apagada. Solo sirve para /api/location/batch y está atado a UN turno activo.
+function requireTrackAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const payload = verifyToken(token, jwtSecret);
+  if (!payload || payload.typ !== 'track' || !Number.isInteger(payload.sub) || !Number.isInteger(payload.aid)) {
+    return res.status(401).json({ error: 'Token de rastreo inválido o expirado.', codigo: 'TOKEN_INVALIDO' });
+  }
+  req.user = { id: payload.sub, rol: 'trabajador' };
+  req.trackAsistenciaId = payload.aid;
+  next();
 }
 
 // Tickets de verificación facial de un solo uso
@@ -745,7 +761,11 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
     const ahoraMs = Date.now();
     const trabajadores = result.recordset.map((w) => {
       const imp = gpsImprecisos.get(w.usuario_id);
-      return { ...w, gps_imprecisa: Boolean(imp && ahoraMs - imp.t < 60_000) };
+      return {
+        ...w,
+        ...(pushTablasListas ? { push_activo: w.push_activo || appNativaActiva(w.usuario_id) ? 1 : 0 } : {}),
+        gps_imprecisa: Boolean(imp && ahoraMs - imp.t < 60_000),
+      };
     });
     const activos = trabajadores.filter((w) => w.estado_asistencia === 'activo');
     const dentro = activos.filter((w) => w.dentro_de_estacion).length;
@@ -958,6 +978,172 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
     emitStaff('attendance_event', { tipo: 'CHECK_OUT', usuarioId, asistencia: registroCompletado, fecha: new Date().toISOString() });
 
     res.json({ exito: true, mensaje: 'Salida registrada y rastreo GPS desactivado', asistencia: registroCompletado });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// La app Android pide este token al marcar entrada y se lo entrega al servicio nativo de ubicación
+app.post('/api/location/track-token', requireAuth(ROLES_WORKER), async (req, res) => {
+  try {
+    const p = await getPool();
+    const r = await p.request().input('usuarioId', sql.Int, req.user.id)
+      .query("SELECT id FROM RegistroAsistencia WHERE usuario_id = @usuarioId AND estado = 'activo'");
+    if (r.recordset.length === 0) {
+      return res.status(403).json({ error: 'El rastreo solo está permitido durante un turno activo', codigo: 'SIN_TURNO' });
+    }
+    const asistenciaId = r.recordset[0].id;
+    const token = signToken({ typ: 'track', sub: req.user.id, aid: asistenciaId }, config.trackTokenHours * 3600, jwtSecret);
+    res.json({ token, asistenciaId, vigenciaHoras: config.trackTokenHours });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Recibe un LOTE de puntos GPS del servicio nativo. Cada punto trae su hora real de captura, así un punto
+// guardado sin internet y enviado después queda en el momento correcto del recorrido.
+// Alertas del supervisor que la app Android aún no mostró: viajan en la respuesta de cada lote (cada ~15 s).
+// "ultima" es la última alerta que la app ya mostró; solo se entregan alertas sin leer y de los últimos 15 min.
+async function alertasParaApp(p, usuarioId, ultima) {
+  if (!pushTablasListas) return [];
+  const r = await p.request().input('u', sql.Int, usuarioId).input('ultima', sql.Int, ultima)
+    .query(`SELECT TOP 3 id, mensaje FROM AlertasEnviadas
+            WHERE usuario_id = @u AND leida_en IS NULL AND id > @ultima AND enviada_en > DATEADD(MINUTE, -15, GETDATE())
+            ORDER BY id ASC`);
+  return r.recordset.map((a) => ({ id: a.id, mensaje: a.mensaje }));
+}
+
+const BATCH_MAX_PUNTOS = 200;
+const BATCH_MAX_ANTIGUEDAD_MS = 12 * 3600 * 1000;
+app.post('/api/location/batch', requireTrackAuth, async (req, res) => {
+  try {
+    const usuarioId = req.user.id;
+    const puntos = req.body?.puntos;
+    if (!Array.isArray(puntos) || puntos.length === 0 || puntos.length > BATCH_MAX_PUNTOS) {
+      return res.status(400).json({ error: `Se esperan entre 1 y ${BATCH_MAX_PUNTOS} puntos` });
+    }
+
+    const ahora = Date.now();
+    let invalidos = 0;
+    let imprecisos = 0;
+    let ultimaImprecision = null;
+    const validos = [];
+    for (const pt of puntos) {
+      if (!pt || !validCoords(pt.latitud, pt.longitud) || !isNum(pt.precision) || pt.precision <= 0 || !isNum(pt.capturadoEn)) {
+        invalidos++;
+        continue;
+      }
+      if (pt.capturadoEn > ahora + 60_000 || ahora - pt.capturadoEn > BATCH_MAX_ANTIGUEDAD_MS) {
+        invalidos++;
+        continue;
+      }
+      if (pt.precision > config.gpsMaxPrecisionPing) {
+        imprecisos++;
+        ultimaImprecision = pt.precision;
+        continue;
+      }
+      validos.push(pt);
+    }
+    validos.sort((a, b) => a.capturadoEn - b.capturadoEn);
+
+    const p = await getPool();
+    const resActivo = await p.request().input('usuarioId', sql.Int, usuarioId)
+      .query("SELECT id FROM RegistroAsistencia WHERE usuario_id = @usuarioId AND estado = 'activo'");
+    // Sin turno, o con un token de otro turno: el celular debe descartar su cola y detener el servicio
+    if (resActivo.recordset.length === 0 || resActivo.recordset[0].id !== req.trackAsistenciaId) {
+      lastPings.delete(usuarioId);
+      return res.status(403).json({ error: 'El turno de este rastreo ya no está activo', codigo: 'SIN_TURNO' });
+    }
+    const asistenciaId = resActivo.recordset[0].id;
+
+    appNativaVista.set(usuarioId, Date.now());
+    const ultimaAlerta = Number.isInteger(req.body?.ultimaAlerta) && req.body.ultimaAlerta >= 0 ? req.body.ultimaAlerta : 0;
+    const alertas = await alertasParaApp(p, usuarioId, ultimaAlerta).catch(() => []);
+
+    if (validos.length === 0) {
+      if (imprecisos > 0) gpsImprecisos.set(usuarioId, { t: ahora, precision: ultimaImprecision });
+      return res.json({ exito: true, guardados: 0, imprecisos, invalidos, omitidos: 0, alertas });
+    }
+    gpsImprecisos.delete(usuarioId);
+
+    // Se descartan los casi idénticos al punto anterior (menos de 5 s y 10 m), igual que en /api/location/ping
+    const previoServidor = lastPings.get(usuarioId);
+    let ref = previoServidor ? { t: previoServidor.t, lat: previoServidor.lat, lng: previoServidor.lng } : null;
+    const aGuardar = [];
+    let omitidos = 0;
+    for (const pt of validos) {
+      if (
+        ref &&
+        Math.abs(pt.capturadoEn - ref.t) < PING_MIN_GAP_MS &&
+        calcularDistanciaMetros(ref.lat, ref.lng, pt.latitud, pt.longitud) < PING_MIN_MOVE_METERS
+      ) {
+        omitidos++;
+        continue;
+      }
+      aGuardar.push(pt);
+      ref = { t: pt.capturadoEn, lat: pt.latitud, lng: pt.longitud };
+    }
+
+    // Estación de cada punto (las estaciones están en caché, no hay consulta por punto)
+    for (const pt of aGuardar) pt.geo = await detectarEstacionTrabajo(pt.latitud, pt.longitud);
+
+    const TAM = 50; // 50 puntos por consulta: sin acercarse al límite de parámetros de SQL Server
+    for (let i = 0; i < aGuardar.length; i += TAM) {
+      const trozo = aGuardar.slice(i, i + TAM);
+      const rq = p.request().input('usuarioId', sql.Int, usuarioId).input('asistId', sql.Int, asistenciaId);
+      const filas = trozo.map((pt, k) => {
+        rq.input(`lat${k}`, sql.Float, pt.latitud)
+          .input(`lng${k}`, sql.Float, pt.longitud)
+          .input(`acc${k}`, sql.Float, pt.precision)
+          .input(`est${k}`, sql.Int, pt.geo.estacionId)
+          .input(`seg${k}`, sql.Int, Math.max(0, Math.round((ahora - pt.capturadoEn) / 1000)));
+        return `(@usuarioId, @asistId, @lat${k}, @lng${k}, @acc${k}, @est${k}, DATEADD(SECOND, -@seg${k}, GETDATE()))`;
+      });
+      await rq.query(
+        `INSERT INTO HistorialUbicaciones (usuario_id, asistencia_id, latitud, longitud, precision, estacion_id, fecha_registro) VALUES ${filas.join(', ')}`
+      );
+    }
+
+    // La ubicación "en vivo" es la del último punto, y solo si es más reciente que la que ya hay
+    // (un lote atrasado no debe pisar un punto más nuevo enviado por la web)
+    const ultimo = aGuardar[aGuardar.length - 1];
+    if (ultimo) {
+      await p.request()
+        .input('usuarioId', sql.Int, usuarioId)
+        .input('asistId', sql.Int, asistenciaId)
+        .input('lat', sql.Float, ultimo.latitud)
+        .input('lng', sql.Float, ultimo.longitud)
+        .input('acc', sql.Float, ultimo.precision)
+        .input('vel', sql.Float, optNum(ultimo.velocidad))
+        .input('rumbo', sql.Float, optNum(ultimo.rumbo))
+        .input('estId', sql.Int, ultimo.geo.estacionId)
+        .input('dentro', sql.Bit, ultimo.geo.dentroDeEstacion ? 1 : 0)
+        .input('seg', sql.Int, Math.max(0, Math.round((ahora - ultimo.capturadoEn) / 1000)))
+        .query(`
+          UPDATE UbicacionesEnVivo
+          SET asistencia_id = @asistId, latitud = @lat, longitud = @lng, precision = @acc,
+              velocidad = @vel, rumbo = @rumbo, estacion_actual_id = @estId,
+              dentro_de_estacion = @dentro, activo = 1, ultimo_ping = DATEADD(SECOND, -@seg, GETDATE())
+          WHERE usuario_id = @usuarioId
+            AND (ultimo_ping IS NULL OR ultimo_ping <= DATEADD(SECOND, -@seg, GETDATE()));
+        `);
+
+      lastPings.set(usuarioId, { t: ultimo.capturadoEn, lat: ultimo.latitud, lng: ultimo.longitud, geo: ultimo.geo });
+      emitStaff('location_ping', {
+        usuarioId,
+        asistenciaId,
+        latitud: ultimo.latitud,
+        longitud: ultimo.longitud,
+        precision: ultimo.precision,
+        estacion: ultimo.geo.estacion,
+        dentroDeEstacion: ultimo.geo.dentroDeEstacion,
+        distanciaMetros: ultimo.geo.distanciaMetros,
+        fecha: new Date(ultimo.capturadoEn).toISOString(),
+        origen: 'app-android',
+      });
+    }
+
+    res.json({ exito: true, guardados: aGuardar.length, omitidos, imprecisos, invalidos, geocerca: ultimo?.geo, alertas });
   } catch (err) {
     fail(res, err);
   }
@@ -1275,7 +1461,7 @@ app.post('/api/push/send', requireAuth(ROLES_STAFF), async (req, res) => {
     io.to(`user:${usuarioId}`).emit('alerta', { id: alertaId, mensaje, fecha: new Date().toISOString() });
     const enApp = (await io.in(`user:${usuarioId}`).fetchSockets()).length > 0;
 
-    console.log(`🔔 [ALERTA ${alertaId}] ${req.user.id} -> usuario ${usuarioId}: ${exitosos}/${subs.length} dispositivos, app abierta: ${enApp}`);
+    console.log(`🔔 [ALERTA ${alertaId}] ${req.user.id} -> usuario ${usuarioId}: ${exitosos}/${subs.length} dispositivos, app abierta: ${enApp}, app Android: ${appNativaActiva(usuarioId)}`);
     res.json({
       alertaId,
       trabajador: u.recordset[0].nombre,
@@ -1283,6 +1469,7 @@ app.post('/api/push/send', requireAuth(ROLES_STAFF), async (req, res) => {
       entregadosAlServicioPush: exitosos,
       caducados: caducadas.length,
       appAbierta: enApp,
+      appNativa: appNativaActiva(usuarioId),
     });
   } catch (err) {
     fail(res, err);

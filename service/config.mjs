@@ -54,6 +54,8 @@ export const config = {
   gpsMaxPrecisionPing: Number(env.GPS_MAX_ACCURACY_PING_M || 100),
   // Antigüedad máxima (ms) de la lectura GPS que el celular declara al marcar (evita usar posiciones viejas)
   gpsMaxAgeMs: Number(env.GPS_MAX_AGE_MS || 30000),
+  // Vigencia (horas) del token que usa el servicio nativo de Android para enviar ubicaciones con la app cerrada
+  trackTokenHours: Number(env.TRACK_TOKEN_HOURS || 18),
   sessionHours: Number(env.SESSION_HOURS || 12),
   adminSessionHours: Number(env.ADMIN_SESSION_HOURS || 8),
   // TLS opcional directo en Node (si no se usa un proxy inverso como nginx/Caddy)

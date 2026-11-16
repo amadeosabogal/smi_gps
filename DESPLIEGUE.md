@@ -109,6 +109,35 @@ Límites que conviene saber:
 - **Durante el turno:** los puntos con precisión peor a ±100 m se descartan (no se guardan) y el trabajador ve el aviso. En el panel se ve la antigüedad de la última señal ("Sin señal GPS desde hace N min") y los trabajadores con GPS impreciso.
 - **Límite de las aplicaciones web (PWA):** el navegador **deja de entregar el GPS cuando la pantalla se apaga o la app pasa a segundo plano**. La app mantiene la pantalla encendida durante el turno y avisa al trabajador, pero si bloquea el teléfono o cambia de aplicación el seguimiento se detiene (en iPhone es más estricto). Para seguimiento continuo en un vehículo hace falta una app nativa con servicio en segundo plano (el proyecto ya incluye Capacitor).
 
+### App Android (rastreo con la pantalla apagada)
+La app nativa es la misma interfaz dentro de Capacitor, más un **servicio en primer plano** (`client/android/.../TrackerService.java`) que captura el GPS y lo envía **por sí mismo** al servidor, sin depender del navegador. Sigue funcionando con la pantalla apagada, con la app cerrada y en modo de ahorro (Doze); si no hay internet, guarda los puntos en el teléfono y los envía después con su hora real; si el celular se reinicia en medio del turno, lo retoma.
+
+Cómo se conecta con el servidor:
+- Al marcar entrada la app pide `POST /api/location/track-token` (token que solo sirve para `POST /api/location/batch`, atado a ese turno, caduca en `TRACK_TOKEN_HOURS`=18 h) y se lo entrega al servicio.
+- El servicio envía lotes a `/api/location/batch`. Si el servidor responde `SIN_TURNO` (salida marcada), el servicio se detiene solo.
+- En `service/.env` añade `https://localhost` a `CORS_ORIGINS` (origen del WebView de la app), por ejemplo `CORS_ORIGINS=https://asistencia.smi-peru.com,https://localhost`.
+
+Compilar el APK (requiere Android Studio; usa su JDK 21):
+```bash
+cd client
+VITE_API_BASE_URL=https://asistencia.smi-peru.com npx vite build   # la app necesita la dirección absoluta del servidor
+npx cap sync android
+cd android
+JAVA_HOME="C:/Program Files/Android/Android Studio/jbr" ./gradlew assembleDebug   # APK en app/build/outputs/apk/debug/
+```
+Cada trabajador debe conceder en el celular: ubicación precisa, **"Permitir todo el tiempo"**, notificaciones y batería "sin restricciones" (la app los guía paso a paso antes de la primera entrada). Xiaomi/Redmi/POCO además necesitan "Inicio automático".
+
+**Alertas del supervisor en la app Android:** viajan en la respuesta de cada envío de ubicación (cada ~15 s). El servicio las muestra como notificación del sistema (suena y vibra, también con la pantalla apagada). Al tocarla, la app abre la alerta y la marca como leída. Una alerta sin leer se entrega durante 15 minutos; si el celular no tiene internet en ese momento, la recibe al reconectar. No usa Firebase.
+
+**APK firmado (versión de entrega):**
+- La llave de firma está en `C:\Users\LENOVO\SMI-GPS-llave\` (`smi-gps.jks` + `claves.txt` con las contraseñas). **Respáldala en al menos dos lugares fuera de la computadora** (USB, gestor de contraseñas). Si se pierde, no se podrá actualizar la app: habría que desinstalarla y reinstalarla en todos los celulares. Nunca se sube a git (`client/android/.gitignore`).
+- `client/android/keystore.properties` (también fuera de git) le dice a Gradle dónde está la llave. En otra computadora hay que copiar la carpeta de la llave y crear ese archivo.
+- Compilar: `VITE_API_BASE_URL=https://asistencia.smi-peru.com npx vite build`, `npx cap sync android`, y en `client/android`: `./gradlew assembleRelease`. El APK queda en `client/android/app/build/outputs/apk/release/app-release.apk`.
+- Para publicar una versión nueva, sube `versionCode` (y `versionName`) en `client/android/app/build.gradle`: Android no instala encima una versión con el mismo `versionCode`.
+- La versión de entrega solo admite HTTPS; la de depuración también HTTP (pruebas locales).
+
+Pendiente para producción: subir el servidor con los endpoints nuevos (`/api/location/batch` y `/api/location/track-token`) y publicar el APK en una ruta del dominio.
+
 ## 5. Qué protege el sistema
 - Los PIN se guardan con hash (scrypt); el login se bloquea tras varios intentos fallidos.
 - Toda la API exige sesión; los trabajadores solo pueden operar sobre su propio usuario.

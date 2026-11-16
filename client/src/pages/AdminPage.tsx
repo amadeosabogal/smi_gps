@@ -477,7 +477,9 @@ export const AdminPage: React.FC = () => {
       const r = await api.sendAlert(alertTarget.usuario_id, alertMsg.trim());
       const hora = new Date().toLocaleTimeString();
       let texto: string;
-      if (r.dispositivos === 0 && !r.appAbierta) {
+      if (r.appNativa && r.dispositivos === 0) {
+        texto = `Alerta enviada a ${r.trabajador}: le aparecerá en su celular en unos 15 segundos (${hora})`;
+      } else if (r.dispositivos === 0 && !r.appAbierta) {
         texto = `${r.trabajador} no tiene las alertas activadas en su celular: solo la verá si abre la app (${hora})`;
       } else if (r.dispositivos > 0 && r.entregadosAlServicioPush === 0 && !r.appAbierta) {
         texto = `No se pudo entregar la alerta a ${r.trabajador}: su celular no respondió (${hora})`;

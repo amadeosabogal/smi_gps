@@ -20,6 +20,13 @@ const getApiBase = () => {
   return `http://${host}:3001/api`;
 };
 
+/** Dirección base del servidor (sin /api). El servicio nativo de Android la usa para enviar la ubicación. */
+export const getApiOrigin = (): string => {
+  const envBase = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  if (envBase) return envBase.replace(/\/$/, '');
+  return typeof window !== 'undefined' ? window.location.origin : '';
+};
+
 // ---------- Sesión ----------
 // La app de trabajador (/) y la consola de administración (/admin) usan sesiones SEPARADAS:
 // así una sesión de trabajador nunca se interpreta como sesión de administrador (ni al revés).
@@ -170,6 +177,7 @@ export const api = {
     entregadosAlServicioPush: number;
     caducados: number;
     appAbierta: boolean;
+    appNativa?: boolean;
   }> {
     return request('/push/send', { method: 'POST', body: JSON.stringify({ usuarioId, mensaje }) });
   },
@@ -304,6 +312,11 @@ export const api = {
     antiguedadMs?: number
   ): Promise<any> {
     return request('/location/ping', { method: 'POST', body: JSON.stringify({ latitud, longitud, precision, antiguedadMs }) });
+  },
+
+  /** Token que usa el servicio nativo de Android para enviar la ubicación del turno activo con la app cerrada. */
+  async getTrackToken(): Promise<{ token: string; asistenciaId: number; vigenciaHoras: number }> {
+    return request('/location/track-token', { method: 'POST' });
   },
 
   /** Precisión GPS que exige el servidor (metros) y antigüedad máxima de la lectura. */

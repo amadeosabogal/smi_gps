@@ -11,6 +11,8 @@ import { PushAlertCard } from '../components/PushAlertCard';
 import { AuthLayout } from '../components/AuthLayout';
 import { BrandLogo } from '../components/BrandLogo';
 import { syncPush, releasePush } from '../services/push';
+import { esAppNativa, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
+import { NativePermissionsModal } from '../components/NativePermissionsModal';
 
 export const WorkerPage: React.FC = () => {
   const [workers, setWorkers] = useState<Usuario[]>([]);
@@ -31,6 +33,10 @@ export const WorkerPage: React.FC = () => {
   const [gpsMensaje, setGpsMensaje] = useState<string>('');
   const [gpsImprecisa, setGpsImprecisa] = useState<number | null>(null); // precisión actual (m) si es insuficiente
   const [wakeLockActivo, setWakeLockActivo] = useState<boolean>(false);
+  // App Android: estado del servicio de rastreo en segundo plano y guía de permisos
+  const [estadoNativo, setEstadoNativo] = useState<EstadoRastreo | null>(null);
+  const [permisosAbierto, setPermisosAbierto] = useState<boolean>(false);
+  const [errorNativo, setErrorNativo] = useState<string | null>(null);
 
   // Shift & tracking state
   const [isActiveShift, setIsActiveShift] = useState<boolean>(false);
@@ -145,6 +151,7 @@ export const WorkerPage: React.FC = () => {
         setIsActiveShift(false);
         setShiftSeconds(0);
         geolocationService.stopTracking();
+        if (esAppNativa) nativeTracker.detener();
       }
     } catch (err) {
       console.error('Error verificando turno activo:', err);
@@ -154,6 +161,23 @@ export const WorkerPage: React.FC = () => {
   useEffect(() => {
     if (isAuthenticated) checkShiftStatus();
   }, [checkShiftStatus, isAuthenticated]);
+
+  // App Android: la ubicación la envía el servicio nativo. Aquí solo se refresca lo que ve el trabajador
+  // (zona, estado del servicio) y, si el servicio se hubiera detenido, se vuelve a iniciar.
+  useEffect(() => {
+    if (!esAppNativa || !isActiveShift) return;
+    const refrescar = () => {
+      if (document.visibilityState !== 'visible') return;
+      checkShiftStatus();
+      nativeTracker.estado().then(setEstadoNativo).catch(() => {});
+    };
+    const id = setInterval(refrescar, 15_000);
+    document.addEventListener('visibilitychange', refrescar);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', refrescar);
+    };
+  }, [isActiveShift, checkShiftStatus]);
 
   // Shift timer
   useEffect(() => {
@@ -189,6 +213,17 @@ export const WorkerPage: React.FC = () => {
 
   // Continuous tracking helper
   const startContinuousTracking = (usuarioId: number) => {
+    // App Android: el servicio nativo captura y envía la ubicación aunque la pantalla esté apagada
+    if (esAppNativa) {
+      nativeTracker
+        .asegurarRastreo()
+        .then((est) => {
+          setEstadoNativo(est);
+          setErrorNativo(null);
+        })
+        .catch((err: any) => setErrorNativo(err?.message || 'No se pudo iniciar el rastreo en segundo plano'));
+      return;
+    }
     lastPingRef.current = null;
     geolocationService.startTracking(
       async (coords) => {
@@ -301,7 +336,7 @@ export const WorkerPage: React.FC = () => {
   // Durante el turno: mantener la pantalla encendida (el navegador deja de entregar el GPS con la pantalla
   // apagada o la app en segundo plano) y reportar la posición al instante cuando se vuelve a la app.
   useEffect(() => {
-    if (!isActiveShift || !selectedUser) return;
+    if (esAppNativa || !isActiveShift || !selectedUser) return; // en la app Android no hace falta mantener la pantalla encendida
     const usuarioId = selectedUser.id;
     let lock: WakeLockSentinel | null = null;
 
@@ -383,11 +418,28 @@ export const WorkerPage: React.FC = () => {
     }
 
     // Si ya había dado permiso, se vuelve a registrar este celular en el servidor (sin preguntar nada)
-    syncPush();
+    if (!esAppNativa) syncPush();
+
+    // App Android: las alertas llegan como notificación del sistema (las trae el servicio de rastreo).
+    // Al tocarla se abre la app con la alerta: se muestra completa y queda marcada como leída.
+    let revisarAlertaNativa: (() => void) | null = null;
+    if (esAppNativa) {
+      revisarAlertaNativa = async () => {
+        if (document.visibilityState !== 'visible') return;
+        const a = await nativeTracker.alertaAbierta().catch(() => null);
+        if (a?.id) {
+          mostrar(a.id, a.mensaje || '');
+          api.ackAlert(a.id).catch(() => {});
+        }
+      };
+      revisarAlertaNativa();
+      document.addEventListener('visibilitychange', revisarAlertaNativa);
+    }
 
     return () => {
       socket.off('alerta', onSocketAlert);
       navigator.serviceWorker?.removeEventListener('message', onSwMessage);
+      if (revisarAlertaNativa) document.removeEventListener('visibilitychange', revisarAlertaNativa);
     };
   }, [isAuthenticated]);
 
@@ -464,11 +516,26 @@ export const WorkerPage: React.FC = () => {
     }
   };
 
-  const iniciarMarcacion = async (tipo: 'entrada' | 'salida') => {
-    if (gpsBuscando) return;
+  const continuarMarcacion = async (tipo: 'entrada' | 'salida') => {
     setCameraTipo(tipo);
     if (tipo === 'entrada' && !(await prepararUbicacionPrecisa())) return;
     setIsCameraOpen(true);
+  };
+
+  const iniciarMarcacion = async (tipo: 'entrada' | 'salida') => {
+    if (gpsBuscando) return;
+    // App Android: antes de iniciar el turno deben estar concedidos los permisos del rastreo en segundo plano
+    if (esAppNativa && tipo === 'entrada') {
+      try {
+        if (!permisosCompletos(await nativeTracker.estado())) {
+          setPermisosAbierto(true);
+          return;
+        }
+      } catch {
+        /* si no se puede consultar, se deja continuar y el inicio del servicio avisará */
+      }
+    }
+    await continuarMarcacion(tipo);
   };
 
   // Handle Check-In con Reconocimiento Facial Biométrico y GPS Real
@@ -555,6 +622,9 @@ export const WorkerPage: React.FC = () => {
         }
       }
 
+      // App Android: se envían los últimos puntos antes de cerrar el turno (después el servidor ya no los acepta)
+      if (esAppNativa) await nativeTracker.enviarPendientes();
+
       await api.checkOut(
         selectedUser.id,
         lat,
@@ -565,6 +635,7 @@ export const WorkerPage: React.FC = () => {
         isVerified
       );
       await geolocationService.stopTracking();
+      if (esAppNativa) await nativeTracker.detener();
 
       setIsCameraOpen(false);
       setIsActiveShift(false);
@@ -754,7 +825,7 @@ export const WorkerPage: React.FC = () => {
           </section>
 
           {/* Alertas del supervisor en el celular (push) */}
-          <PushAlertCard />
+          {!esAppNativa && <PushAlertCard />}
 
           {/* Ubicación (GPS) del celular */}
           {gpsPermissionStatus !== 'granted' ? (
@@ -865,6 +936,40 @@ export const WorkerPage: React.FC = () => {
                 </section>
               )}
 
+              {esAppNativa ? (
+                <section
+                  className={`panel border-l-4 p-4 ${
+                    errorNativo || (estadoNativo && !estadoNativo.servicioCorriendo) ? 'border-l-red-700' : 'border-l-green-700'
+                  }`}
+                >
+                  {errorNativo || (estadoNativo && !estadoNativo.servicioCorriendo) ? (
+                    <>
+                      <h3 className="text-sm font-semibold text-red-800">El rastreo en segundo plano no está activo</h3>
+                      <p className="mt-0.5 text-sm text-slate-700">
+                        {errorNativo || estadoNativo?.ultimoError || 'Su ubicación no se está registrando.'}
+                      </p>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm mt-2"
+                        onClick={() => selectedUser && startContinuousTracking(selectedUser.id)}
+                      >
+                        Reintentar
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <h3 className="text-sm font-semibold text-slate-900">Rastreo activo en segundo plano</h3>
+                      <p className="mt-0.5 text-sm text-slate-600">
+                        Su ubicación se registra durante el turno aunque apague la pantalla o cierre esta aplicación. No
+                        desinstale ni detenga la aplicación hasta registrar su salida.
+                        {estadoNativo && estadoNativo.pendientes > 3
+                          ? ` Sin conexión: ${estadoNativo.pendientes} puntos pendientes de enviar.`
+                          : ''}
+                      </p>
+                    </>
+                  )}
+                </section>
+              ) : (
               <section className="panel border-l-4 border-l-amber-600 p-4">
                 <h3 className="text-sm font-semibold text-slate-900">Mantenga esta aplicación abierta</h3>
                 <p className="mt-0.5 text-sm text-slate-600">
@@ -873,6 +978,7 @@ export const WorkerPage: React.FC = () => {
                   el teléfono o cambia de aplicación, el seguimiento se detiene.
                 </p>
               </section>
+              )}
 
               <section
                 className={`panel flex items-start gap-3 border-l-4 p-4 ${
@@ -956,6 +1062,17 @@ export const WorkerPage: React.FC = () => {
             } else {
               handleCheckOutWithPhoto(result.photoBase64, result.similarity, result.isVerified);
             }
+          }}
+        />
+      )}
+
+      {/* App Android: guía de permisos del rastreo en segundo plano */}
+      {esAppNativa && permisosAbierto && (
+        <NativePermissionsModal
+          onCancelar={() => setPermisosAbierto(false)}
+          onListo={() => {
+            setPermisosAbierto(false);
+            continuarMarcacion('entrada');
           }}
         />
       )}
