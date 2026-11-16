@@ -148,6 +148,21 @@ async function checkDispositivoColumna() {
   }
 }
 
+// ¿Existen las columnas de batería? (se crean con: npm run migrate-bateria). Sin ellas todo funciona como antes.
+let bateriaColumnas = false;
+async function checkBateriaColumnas() {
+  try {
+    const p = await getPool();
+    const r = await p.request().query(
+      "SELECT COL_LENGTH('HistorialUbicaciones', 'bateria') AS h, COL_LENGTH('UbicacionesEnVivo', 'bateria') AS v"
+    );
+    bateriaColumnas = Boolean(r.recordset[0].h && r.recordset[0].v);
+    if (!bateriaColumnas) console.warn('⚠️ La batería del celular aún no se guarda: ejecuta  npm run migrate-bateria  y reinicia.');
+  } catch (err) {
+    console.warn('No se pudo comprobar las columnas de batería:', err.message);
+  }
+}
+
 process.on('uncaughtException', (err) => {
   console.error('🚨 Excepción no capturada:', err);
 });
@@ -849,6 +864,7 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
         ${pushTablasListas ? 'CASE WHEN EXISTS (SELECT 1 FROM SuscripcionesPush sp WHERE sp.usuario_id = u.id) THEN 1 ELSE 0 END AS push_activo,' : ''}
         a.id as asistencia_id, a.hora_ingreso, CASE WHEN a.foto_ingreso_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_ingreso, a.estado as estado_asistencia,
         uv.latitud, uv.longitud, uv.precision, uv.ultimo_ping, uv.dentro_de_estacion,
+        ${bateriaColumnas ? 'uv.bateria, uv.cargando,' : ''}
         DATEDIFF(SECOND, uv.ultimo_ping, GETDATE()) AS segundos_sin_ping,
         e.id as estacion_id, e.nombre as estacion_nombre, e.codigo as estacion_codigo, e.color as estacion_color
       FROM Usuarios u
@@ -1228,6 +1244,9 @@ app.post('/api/location/batch', requireTrackAuth, async (req, res) => {
         ultimaImprecision = pt.precision;
         continue;
       }
+      // Batería (opcional; las versiones anteriores de la app no la envían)
+      pt.bat = Number.isInteger(pt.bateria) && pt.bateria >= 0 && pt.bateria <= 100 ? pt.bateria : null;
+      pt.chg = typeof pt.cargando === 'boolean' ? (pt.cargando ? 1 : 0) : null;
       validos.push(pt);
     }
     validos.sort((a, b) => a.capturadoEn - b.capturadoEn);
@@ -1286,10 +1305,15 @@ app.post('/api/location/batch', requireTrackAuth, async (req, res) => {
           .input(`acc${k}`, sql.Float, pt.precision)
           .input(`est${k}`, sql.Int, pt.geo.estacionId)
           .input(`seg${k}`, sql.Int, Math.max(0, Math.round((ahora - pt.capturadoEn) / 1000)));
-        return `(@usuarioId, @asistId, @lat${k}, @lng${k}, @acc${k}, @est${k}, DATEADD(SECOND, -@seg${k}, GETDATE()))`;
+        if (bateriaColumnas) rq.input(`bat${k}`, sql.TinyInt, pt.bat).input(`chg${k}`, sql.Bit, pt.chg);
+        return `(@usuarioId, @asistId, @lat${k}, @lng${k}, @acc${k}, @est${k}, DATEADD(SECOND, -@seg${k}, GETDATE())${
+          bateriaColumnas ? `, @bat${k}, @chg${k}` : ''
+        })`;
       });
       await rq.query(
-        `INSERT INTO HistorialUbicaciones (usuario_id, asistencia_id, latitud, longitud, precision, estacion_id, fecha_registro) VALUES ${filas.join(', ')}`
+        `INSERT INTO HistorialUbicaciones (usuario_id, asistencia_id, latitud, longitud, precision, estacion_id, fecha_registro${
+          bateriaColumnas ? ', bateria, cargando' : ''
+        }) VALUES ${filas.join(', ')}`
       );
     }
 
@@ -1308,10 +1332,13 @@ app.post('/api/location/batch', requireTrackAuth, async (req, res) => {
         .input('estId', sql.Int, ultimo.geo.estacionId)
         .input('dentro', sql.Bit, ultimo.geo.dentroDeEstacion ? 1 : 0)
         .input('seg', sql.Int, Math.max(0, Math.round((ahora - ultimo.capturadoEn) / 1000)))
+        .input('bat', sql.TinyInt, ultimo.bat)
+        .input('chg', sql.Bit, ultimo.chg)
         .query(`
           UPDATE UbicacionesEnVivo
           SET asistencia_id = @asistId, latitud = @lat, longitud = @lng, precision = @acc,
               velocidad = @vel, rumbo = @rumbo, estacion_actual_id = @estId,
+              ${bateriaColumnas ? 'bateria = COALESCE(@bat, bateria), cargando = COALESCE(@chg, cargando),' : ''}
               dentro_de_estacion = @dentro, activo = 1, ultimo_ping = DATEADD(SECOND, -@seg, GETDATE())
           WHERE usuario_id = @usuarioId
             AND (ultimo_ping IS NULL OR ultimo_ping <= DATEADD(SECOND, -@seg, GETDATE()));
@@ -1329,6 +1356,8 @@ app.post('/api/location/batch', requireTrackAuth, async (req, res) => {
         distanciaMetros: ultimo.geo.distanciaMetros,
         fecha: new Date(ultimo.capturadoEn).toISOString(),
         origen: 'app-android',
+        bateria: ultimo.bat,
+        cargando: ultimo.chg === null ? null : ultimo.chg === 1,
       });
     }
 
@@ -1706,7 +1735,7 @@ app.get('/api/attendance/:id/route', requireAuth(ROLES_STAFF), async (req, res) 
 
     // Un turno de 8 h a un punto cada 15 s son ~1 900 puntos; el tope evita respuestas enormes ante datos anómalos
     const puntos = await p.request().input('id', sql.Int, id).query(`
-      SELECT TOP (20000) latitud, longitud, precision, estacion_id, fecha_registro
+      SELECT TOP (20000) latitud, longitud, precision, estacion_id, fecha_registro${bateriaColumnas ? ', bateria, cargando' : ''}
       FROM HistorialUbicaciones
       WHERE asistencia_id = @id
       ORDER BY fecha_registro ASC, id ASC`);
@@ -1721,6 +1750,8 @@ app.get('/api/attendance/:id/route', requireAuth(ROLES_STAFF), async (req, res) 
         precision: r.precision,
         estacionId: r.estacion_id,
         fecha: r.fecha_registro,
+        bateria: r.bateria ?? null,
+        cargando: r.cargando === null || r.cargando === undefined ? null : Boolean(r.cargando),
       })),
     });
   } catch (err) {
@@ -1865,4 +1896,5 @@ server.listen(config.port, '0.0.0.0', () => {
   checkPinColumn();
   checkPushTables();
   checkDispositivoColumna();
+  checkBateriaColumnas();
 });

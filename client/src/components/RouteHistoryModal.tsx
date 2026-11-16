@@ -55,6 +55,45 @@ const Seguir: React.FC<{ punto: [number, number] | null; activo: boolean }> = ({
   return null;
 };
 
+// Curva de batería del turno: línea del porcentaje, franjas verdes mientras estuvo en el cargador y marca de la posición actual
+const CurvaBateria: React.FC<{
+  pts: { t: number; bateria?: number | null; cargando?: boolean | null }[];
+  actual: number;
+}> = ({ pts, actual }) => {
+  const datos = pts.filter((p) => p.bateria !== null && p.bateria !== undefined);
+  if (datos.length < 2) return null;
+  const W = 300;
+  const H = 90;
+  const t0 = datos[0].t;
+  const t1 = datos[datos.length - 1].t;
+  const x = (t: number) => (t1 === t0 ? 0 : ((t - t0) / (t1 - t0)) * W);
+  const y = (v: number) => H - (Math.max(0, Math.min(100, v)) / 100) * H;
+  const linea = datos.map((p) => `${x(p.t).toFixed(1)},${y(p.bateria as number).toFixed(1)}`).join(' ');
+  // franjas de carga
+  const franjas: { x1: number; x2: number }[] = [];
+  let ini: number | null = null;
+  datos.forEach((p, i) => {
+    if (p.cargando && ini === null) ini = p.t;
+    if ((!p.cargando || i === datos.length - 1) && ini !== null) {
+      franjas.push({ x1: x(ini), x2: x(p.t) });
+      ini = null;
+    }
+  });
+  const xa = x(Math.max(t0, Math.min(t1, actual)));
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="h-24 w-full border border-slate-200 bg-white" preserveAspectRatio="none" role="img" aria-label="Curva de batería del turno">
+      {[25, 50, 75].map((v) => (
+        <line key={v} x1={0} x2={W} y1={y(v)} y2={y(v)} stroke="#e2e8f0" strokeWidth={0.6} />
+      ))}
+      {franjas.map((f, i) => (
+        <rect key={i} x={f.x1} y={0} width={Math.max(1.5, f.x2 - f.x1)} height={H} fill="#1f7a4d" opacity={0.18} />
+      ))}
+      <polyline points={linea} fill="none" stroke="#1c42ba" strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
+      <line x1={xa} x2={xa} y1={0} y2={H} stroke="#b45f06" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+};
+
 export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations, onClose }) => {
   const [data, setData] = useState<RecorridoTurno | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -148,7 +187,34 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
     tramos.push(actual);
 
     const sinSenal = huecos.reduce((a, h) => a + h.seg, 0);
-    return { pts, distancia, segFuera, segDentro, huecos, sinSenal, tramos, lineasHueco };
+
+    // Batería: consumo medio SIN contar los tramos con el cargador conectado ni los huecos de señal
+    const conBat = pts.filter((p) => p.bateria !== null && p.bateria !== undefined);
+    let bajada = 0;
+    let segSinCarga = 0;
+    let segCargando = 0;
+    for (let i = 1; i < conBat.length; i++) {
+      const a = conBat[i - 1];
+      const b = conBat[i];
+      const dt = (b.t - a.t) / 1000;
+      if (dt > GAP_SEGUNDOS * 4) continue;
+      if (a.cargando || b.cargando) {
+        segCargando += dt;
+      } else {
+        segSinCarga += dt;
+        const d = (a.bateria as number) - (b.bateria as number);
+        if (d > 0) bajada += d;
+      }
+    }
+    const bateria = {
+      hay: conBat.length >= 2,
+      inicio: conBat.length ? (conBat[0].bateria as number) : null,
+      fin: conBat.length ? (conBat[conBat.length - 1].bateria as number) : null,
+      // con menos de 30 min sin cargador el dato no es fiable (la batería baja de 1 en 1 %)
+      porHora: segSinCarga >= 1800 ? bajada / (segSinCarga / 3600) : null,
+      minCargando: segCargando / 60,
+    };
+    return { pts, distancia, segFuera, segDentro, huecos, sinSenal, tramos, lineasHueco, bateria };
   }, [data]);
 
   const nombreEstacion = (id: number | null) =>
@@ -294,6 +360,7 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
                 <span className="font-semibold tabular-nums">{hora(cur.t)}</span> · punto {Math.min(idx, total - 1) + 1} de {total} ·{' '}
                 <span className={cur.dentro ? 'font-semibold text-green-800' : 'font-semibold text-amber-800'}>{nombreEstacion(cur.estacionId)}</span>
                 {cur.precision != null ? ` · ±${Math.round(cur.precision)} m` : ''}
+                {cur.bateria != null ? ` · batería ${cur.bateria} %${cur.cargando ? ' (cargando)' : ''}` : ''}
               </p>
               <p className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
                 <span><span className="mr-1 inline-block h-2 w-4 align-middle" style={{ background: COLOR_DENTRO }} />Dentro de una estación</span>
@@ -318,6 +385,33 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
                     <p className="mt-0.5 font-semibold tabular-nums text-slate-900">{v}</p>
                   </div>
                 ))}
+              </div>
+
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Batería del teléfono</h3>
+                {info.bateria.hay ? (
+                  <>
+                    <div className="mt-1">
+                      <CurvaBateria pts={info.pts} actual={cur.t} />
+                    </div>
+                    <p className="mt-1 text-sm text-slate-700">
+                      De <strong className="tabular-nums">{info.bateria.inicio} %</strong> a{' '}
+                      <strong className="tabular-nums">{info.bateria.fin} %</strong>
+                      {info.bateria.porHora !== null && (
+                        <>
+                          {' '}
+                          · consumo medio ≈ <strong className="tabular-nums">{info.bateria.porHora.toFixed(1)} % por hora</strong> sin cargador
+                        </>
+                      )}
+                      {info.bateria.minCargando >= 1 && <> · cargando {duracion(info.bateria.minCargando * 60)}</>}
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">La franja verde marca cuándo estuvo conectado al cargador.</p>
+                  </>
+                ) : (
+                  <p className="mt-1 text-sm text-slate-600">
+                    Sin datos de batería en este turno (solo los envía la app Android 1.0.2 o posterior).
+                  </p>
+                )}
               </div>
 
               <div>

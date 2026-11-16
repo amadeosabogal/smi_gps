@@ -23,6 +23,9 @@ import {
   Search,
   Plus,
   Trash2,
+  Battery,
+  BatteryCharging,
+  BatteryLow,
   LogOut,
   X,
   Link,
@@ -409,6 +412,8 @@ export const AdminPage: React.FC = () => {
               estacion_codigo: data.estacion ? data.estacion.codigo : null,
               estacion_color: data.estacion ? data.estacion.color : null,
               ultimo_ping: data.fecha,
+              bateria: data.bateria ?? worker.bateria,
+              cargando: data.cargando ?? worker.cargando,
             };
           }
           return worker;
@@ -1214,6 +1219,15 @@ export const AdminPage: React.FC = () => {
                               const seg = worker.segundos_sin_ping ?? 0;
                               const sinSenal = seg > 90; // más de 90 s sin ningún punto GPS
                               const imprecisa = Boolean(worker.gps_imprecisa) || (worker.precision ?? 0) > 50;
+                              const bat = worker.bateria ?? null;
+                              const cargando = Boolean(worker.cargando);
+                              const batColor = cargando
+                                ? 'text-green-700'
+                                : bat !== null && bat <= 15
+                                ? 'text-red-700'
+                                : bat !== null && bat <= 30
+                                ? 'text-amber-700'
+                                : 'text-slate-600';
                               return (
                                 <div className="mt-2 border border-slate-200 bg-white p-2 text-sm">
                                   <div className="flex items-center justify-between">
@@ -1230,8 +1244,30 @@ export const AdminPage: React.FC = () => {
                                         ? `Sin señal GPS desde hace ${formatoHace(seg)}`
                                         : `Última señal hace ${formatoHace(seg)}`}
                                     </span>
-                                    {imprecisa && <span className="font-semibold text-red-700">GPS impreciso</span>}
+                                    <span className="flex items-center gap-2">
+                                      {imprecisa && <span className="font-semibold text-red-700">GPS impreciso</span>}
+                                      {bat !== null && (
+                                        <span
+                                          className={`inline-flex items-center gap-1 font-semibold tabular-nums ${batColor}`}
+                                          title={cargando ? 'El teléfono está conectado al cargador' : 'Batería del teléfono'}
+                                        >
+                                          {cargando ? (
+                                            <BatteryCharging className="h-3.5 w-3.5" />
+                                          ) : bat <= 15 ? (
+                                            <BatteryLow className="h-3.5 w-3.5" />
+                                          ) : (
+                                            <Battery className="h-3.5 w-3.5" />
+                                          )}
+                                          {bat} %{cargando ? ' · cargando' : ''}
+                                        </span>
+                                      )}
+                                    </span>
                                   </div>
+                                  {sinSenal && bat !== null && bat <= 10 && !cargando && (
+                                    <p className="mt-1 text-xs text-red-700">
+                                      Última batería registrada: {bat} %. Es posible que el teléfono se haya apagado.
+                                    </p>
+                                  )}
                                 </div>
                               );
                             })()}

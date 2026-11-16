@@ -77,6 +77,8 @@ export interface DatosTrabajadorEnVivo {
   push_activo?: boolean | number; // ¿tiene las alertas activadas en su celular?
   segundos_sin_ping?: number | null; // antigüedad de la última señal GPS recibida
   gps_imprecisa?: boolean; // el celular está enviando una ubicación demasiado imprecisa
+  bateria?: number | null; // % de batería del teléfono (solo app Android)
+  cargando?: boolean | number | null; // ¿está conectado al cargador?
   estado_asistencia: 'activo' | null;
   latitud: number | null;
   longitud: number | null;
@@ -117,6 +119,8 @@ export interface PuntoRecorrido {
   precision: number | null;
   estacionId: number | null;
   fecha: string;
+  bateria?: number | null;
+  cargando?: boolean | null;
 }
 
 export interface RecorridoTurno {

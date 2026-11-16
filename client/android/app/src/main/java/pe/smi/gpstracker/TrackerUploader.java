@@ -96,6 +96,8 @@ final class TrackerUploader {
                     if (p.vel != null) o.put("velocidad", p.vel);
                     if (p.brg != null) o.put("rumbo", p.brg);
                     o.put("simulada", p.sim);
+                    if (p.bat >= 0) o.put("bateria", p.bat);
+                    if (p.chg >= 0) o.put("cargando", p.chg == 1);
                     arr.put(o);
                 }
                 JSONObject cuerpo = new JSONObject().put("puntos", arr).put("ultimaAlerta", store.getUltimaAlerta());

@@ -162,6 +162,13 @@ Qué esperar:
 - La app instalada (APK) y la web (PWA) cuentan como dispositivos distintos, aunque estén en el mismo teléfono.
 - Si el trabajador borra los datos de la app o la reinstala a mitad de turno, el teléfono pasa a ser "otro dispositivo": debe registrar la salida y volver a marcar la entrada. La salida se puede registrar desde cualquier dispositivo (con verificación facial), por ejemplo si perdió el teléfono donde empezó el turno.
 
+### Batería del teléfono (app Android 1.0.2 o posterior)
+Con cada punto GPS la app lee el porcentaje de batería y si el teléfono está conectado al cargador (lo entrega el sistema sin permisos ni gasto extra) y lo envía junto a la ubicación. Se ve en:
+- **Tarjeta de cada trabajador** (Personal en Turno): "62 %", en ámbar por debajo de 30 %, en rojo por debajo de 15 %, y en verde con "· cargando". Si además está "Sin señal GPS" y su última batería fue de 10 % o menos, el panel avisa que probablemente el teléfono se apagó.
+- **Visor de recorrido:** curva de batería del turno (franja verde = cargador conectado) y consumo medio por hora sin contar los tramos con cargador (solo si hubo al menos 30 min sin cargador).
+
+Puesta en marcha (una vez): `npm run migrate-bateria` (añade `bateria` y `cargando` a `HistorialUbicaciones` y `UbicacionesEnVivo`; son columnas NULL, se crean al instante; con `--dry-run` solo muestra qué haría) y `pm2 restart smi-gps`. Sin las columnas todo funciona como antes y el servidor lo avisa en el arranque. Las versiones anteriores de la app no envían batería: esos turnos muestran "Sin datos de batería". Los puntos guardados sin internet conservan la batería que tenían al capturarse. La versión web (PWA) no envía batería.
+
 ### Salida forzada por un administrador
 En **Personal en Turno** (y en el historial, en los turnos activos) el administrador tiene el botón **Forzar salida**: cierra el turno **sin verificación facial ni foto**, con la hora actual y la última ubicación conocida del trabajador. Pide un motivo obligatorio (3 a 200 caracteres) que queda en `RegistroAsistencia.notas` como `SALIDA FORZADA por <código> <nombre>: <motivo>`; el historial la marca con la etiqueta "Forzada". Solo el rol `administrador` puede hacerlo (no los supervisores) y no se puede deshacer. Si el trabajador tiene la app abierta se entera al instante; la app Android además muestra una notificación y detiene su servicio de GPS en el siguiente envío (hasta ~15 s).
 

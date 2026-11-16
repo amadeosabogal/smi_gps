@@ -17,7 +17,7 @@ import java.util.List;
  */
 final class TrackerStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "smi_tracker.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
     /** Máximo de puntos en cola (≈ 20 h a un punto cada 15 s). Si se excede, se descartan los más viejos. */
     static final int MAX_COLA = 5000;
 
@@ -37,12 +37,17 @@ final class TrackerStore extends SQLiteOpenHelper {
     @Override
     public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE puntos (id INTEGER PRIMARY KEY AUTOINCREMENT, lat REAL NOT NULL, lng REAL NOT NULL, "
-                + "acc REAL NOT NULL, vel REAL, brg REAL, t INTEGER NOT NULL, sim INTEGER NOT NULL DEFAULT 0)");
+                + "acc REAL NOT NULL, vel REAL, brg REAL, t INTEGER NOT NULL, sim INTEGER NOT NULL DEFAULT 0, "
+                + "bat INTEGER, chg INTEGER)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // sin migraciones por ahora
+        // v2: porcentaje de batería y si estaba conectado al cargador en el momento de cada punto
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE puntos ADD COLUMN bat INTEGER");
+            db.execSQL("ALTER TABLE puntos ADD COLUMN chg INTEGER");
+        }
     }
 
     // ---------------- Configuración ----------------
@@ -110,6 +115,8 @@ final class TrackerStore extends SQLiteOpenHelper {
         Double vel, brg;
         long t;
         boolean sim;
+        int bat = -1; // % de batería (0-100); -1 = no disponible
+        int chg = -1; // 1 = conectado al cargador, 0 = no, -1 = no disponible
     }
 
     synchronized void agregar(Punto p) {
@@ -122,6 +129,8 @@ final class TrackerStore extends SQLiteOpenHelper {
         if (p.brg != null) v.put("brg", p.brg); else v.putNull("brg");
         v.put("t", p.t);
         v.put("sim", p.sim ? 1 : 0);
+        v.put("bat", p.bat);
+        v.put("chg", p.chg);
         db.insert("puntos", null, v);
         // Tope de la cola: se borran los más antiguos
         db.execSQL("DELETE FROM puntos WHERE id <= (SELECT MAX(id) FROM puntos) - " + MAX_COLA);
@@ -131,7 +140,7 @@ final class TrackerStore extends SQLiteOpenHelper {
     synchronized List<Punto> primeros(int limite) {
         List<Punto> lista = new ArrayList<>();
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT id, lat, lng, acc, vel, brg, t, sim FROM puntos ORDER BY id ASC LIMIT " + limite, null);
+                "SELECT id, lat, lng, acc, vel, brg, t, sim, bat, chg FROM puntos ORDER BY id ASC LIMIT " + limite, null);
         try {
             while (c.moveToNext()) {
                 Punto p = new Punto();
@@ -143,6 +152,8 @@ final class TrackerStore extends SQLiteOpenHelper {
                 p.brg = c.isNull(5) ? null : c.getDouble(5);
                 p.t = c.getLong(6);
                 p.sim = c.getInt(7) == 1;
+                p.bat = c.isNull(8) ? -1 : c.getInt(8);
+                p.chg = c.isNull(9) ? -1 : c.getInt(9);
                 lista.add(p);
             }
         } finally {

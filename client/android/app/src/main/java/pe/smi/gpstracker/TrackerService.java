@@ -9,6 +9,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.location.Location;
+import android.content.IntentFilter;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -120,6 +122,7 @@ public class TrackerService extends Service {
             @Override
             public void onLocationResult(LocationResult resultado) {
                 TrackerStore store = TrackerStore.get(TrackerService.this);
+                int[] bateria = leerBateria();
                 for (Location loc : resultado.getLocations()) {
                     if (!loc.hasAccuracy()) continue;
                     TrackerStore.Punto p = new TrackerStore.Punto();
@@ -130,6 +133,8 @@ public class TrackerService extends Service {
                     p.brg = loc.hasBearing() ? (double) loc.getBearing() : null;
                     p.t = loc.getTime();
                     p.sim = Build.VERSION.SDK_INT >= 31 ? loc.isMock() : loc.isFromMockProvider();
+                    p.bat = bateria[0];
+                    p.chg = bateria[1];
                     store.agregar(p);
                 }
                 subir();
@@ -141,6 +146,24 @@ public class TrackerService extends Service {
         } catch (SecurityException e) {
             TrackerStore.get(this).setLastError("Falta el permiso de ubicación");
             actualizarNotificacion("Falta el permiso de ubicación: abra la aplicación");
+        }
+    }
+
+    /**
+     * Batería del teléfono: {porcentaje 0-100, conectado al cargador 1/0}. Se lee del aviso "sticky" del sistema:
+     * es instantáneo, no pide permisos y no gasta batería. {-1, -1} si no se puede leer.
+     */
+    private int[] leerBateria() {
+        try {
+            Intent i = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (i == null) return new int[]{-1, -1};
+            int nivel = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int escala = i.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            int enchufado = i.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
+            int pct = nivel >= 0 && escala > 0 ? Math.round(nivel * 100f / escala) : -1;
+            return new int[]{pct, enchufado > 0 ? 1 : 0};
+        } catch (Exception e) {
+            return new int[]{-1, -1};
         }
     }
 
