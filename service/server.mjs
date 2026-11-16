@@ -473,7 +473,7 @@ app.get('/api/auth/me', requireAuth(), async (req, res) => {
 app.get('/api/workstations', requireAuth(), async (req, res) => {
   try {
     const p = await getPool();
-    const result = await p.request().query('SELECT * FROM EstacionesTrabajo ORDER BY id ASC');
+    const result = await p.request().query('SELECT * FROM EstacionesTrabajo WHERE activo = 1 ORDER BY id ASC');
     res.json(result.recordset);
   } catch (err) {
     fail(res, err);
