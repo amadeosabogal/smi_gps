@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
 import { api, getApiOrigin } from './api';
 
 // Puente con el servicio nativo de Android (rastreo del turno con la pantalla apagada o la app cerrada).
@@ -43,6 +44,7 @@ interface SmiTrackerPlugin {
   detener(): Promise<EstadoRastreo>;
   estado(): Promise<EstadoRastreo>;
   alertaAbierta(): Promise<{ id?: number; mensaje?: string }>;
+  abrirEnlace(o: { url: string }): Promise<void>;
 }
 
 export const esAppNativa = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
@@ -81,6 +83,13 @@ export const nativeTracker = {
   pedirBateria: () => requerido().pedirBateriaSinRestriccion(),
   abrirAjustes: () => requerido().abrirAjustes(),
   abrirAjustesFabricante: () => requerido().abrirAjustesFabricante(),
+  /** Versión instalada de la app (versionCode y nombre). */
+  async versionInstalada(): Promise<{ code: number; nombre: string }> {
+    const info = await CapApp.getInfo();
+    return { code: Number.parseInt(info.build, 10) || 0, nombre: info.version };
+  },
+  /** Abre un enlace en el navegador del teléfono (descarga del APK nuevo). */
+  abrirEnlace: (url: string) => requerido().abrirEnlace({ url }),
   /** Alerta del supervisor cuyo aviso tocó el trabajador (se entrega una sola vez). */
   alertaAbierta: () => requerido().alertaAbierta(),
 

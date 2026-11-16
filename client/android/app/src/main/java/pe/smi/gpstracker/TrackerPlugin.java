@@ -135,6 +135,22 @@ public class TrackerPlugin extends Plugin {
         call.resolve();
     }
 
+    /** Abre un enlace (la descarga del APK nuevo) en el navegador del teléfono. */
+    @PluginMethod
+    public void abrirEnlace(PluginCall call) {
+        String url = call.getString("url");
+        if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) {
+            call.reject("Enlace inválido");
+            return;
+        }
+        try {
+            getContext().startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("No se pudo abrir el enlace");
+        }
+    }
+
     @PluginMethod
     public void abrirAjustes(PluginCall call) {
         abrirAjustesApp(call);

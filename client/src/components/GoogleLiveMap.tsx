@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { setOptions, importLibrary } from '@googlemaps/js-api-loader';
-import type { EstacionTrabajo, DatosTrabajadorEnVivo } from '../types';
-import { api } from '../services/api';
-import { Key, AlertTriangle, Layers, ExternalLink } from 'lucide-react';
+import type { EstacionTrabajo, DatosTrabajadorEnVivo, ColocacionEstacion, CambioColocacion } from '../types';
+import { Key, AlertTriangle, ExternalLink } from 'lucide-react';
 
 function escapeXml(unsafe: string) {
   return (unsafe || '')
@@ -45,7 +44,11 @@ interface GoogleLiveMapProps {
   activeWorkers: DatosTrabajadorEnVivo[];
   selectedWorker?: DatosTrabajadorEnVivo | null;
   onSelectWorker?: (worker: DatosTrabajadorEnVivo) => void;
-  onMapClick?: (lat: number, lng: number) => void;
+  /** Modo "nueva estación": cuando está activo, un clic en el mapa marca el punto y el círculo se puede ajustar */
+  colocacion?: ColocacionEstacion;
+  onColocacionChange?: (cambio: CambioColocacion) => void;
+  /** Botón "Eliminar estación" de la ventana de información de cada estación */
+  onDeleteStation?: (station: EstacionTrabajo) => void;
 }
 
 export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
@@ -53,7 +56,9 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
   activeWorkers,
   selectedWorker,
   onSelectWorker,
-  onMapClick,
+  colocacion,
+  onColocacionChange,
+  onDeleteStation,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
@@ -61,6 +66,15 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
   const stationMarkersRef = useRef<google.maps.Marker[]>([]);
   const workerMarkersRef = useRef<google.maps.Marker[]>([]);
   const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
+  const draftCircleRef = useRef<google.maps.Circle | null>(null);
+  const draftMarkerRef = useRef<google.maps.Marker | null>(null);
+  // Los listeners del mapa se crean una sola vez: leen siempre el valor más reciente a través de estas referencias
+  const colocacionRef = useRef(colocacion);
+  colocacionRef.current = colocacion;
+  const onColocacionChangeRef = useRef(onColocacionChange);
+  onColocacionChangeRef.current = onColocacionChange;
+  const onDeleteStationRef = useRef(onDeleteStation);
+  onDeleteStationRef.current = onDeleteStation;
 
   // API Key from .env or localStorage
   const envKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
@@ -116,8 +130,8 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
         });
 
         map.addListener('click', (e: google.maps.MapMouseEvent) => {
-          if (e.latLng && onMapClick) {
-            onMapClick(e.latLng.lat(), e.latLng.lng());
+          if (e.latLng && colocacionRef.current?.activo) {
+            onColocacionChangeRef.current?.({ lat: e.latLng.lat(), lng: e.latLng.lng() });
           }
         });
 
@@ -160,6 +174,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
         map,
         center: { lat: station.latitud, lng: station.longitud },
         radius: station.radio_metros,
+        clickable: !colocacion?.activo,
       });
 
       const labelText = `${station.codigo} • ${station.nombre}`;
@@ -178,6 +193,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
           anchor: new window.google.maps.Point(pillWidth / 2, totalHeight - 2),
         },
         zIndex: 100,
+        clickable: !colocacion?.activo,
       });
 
       const content = `
@@ -194,31 +210,110 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
           </p>
           ${
             station.descripcion
-              ? `<p style="font-size: 10px; color: #475569; background: #F1F5F9; padding: 4px; border-radius: 0; margin-top: 4px;">${station.descripcion}</p>`
+              ? `<p style="font-size: 10px; color: #475569; background: #F1F5F9; padding: 4px; border-radius: 0; margin-top: 4px;">${escapeXml(station.descripcion)}</p>`
               : ''
           }
+          <button id="smi-del-st-${station.id}" type="button" style="margin-top: 8px; width: 100%; padding: 5px 8px; font-size: 11px; font-weight: 600; color: #b91c1c; background: #ffffff; border: 1px solid #fca5a5; cursor: pointer;">
+            Eliminar estación
+          </button>
         </div>
       `;
 
-      circle.addListener('click', () => {
-        if (infoWindowRef.current) {
-          infoWindowRef.current.setContent(content);
-          infoWindowRef.current.setPosition({ lat: station.latitud, lng: station.longitud });
-          infoWindowRef.current.open(map);
-        }
-      });
+      // El contenido del InfoWindow es HTML: el botón se conecta cuando la ventana ya está en pantalla
+      const abrirInfo = (abrir: () => void) => {
+        const iw = infoWindowRef.current;
+        if (!iw) return;
+        iw.setContent(content);
+        window.google.maps.event.addListenerOnce(iw, 'domready', () => {
+          document.getElementById(`smi-del-st-${station.id}`)?.addEventListener('click', () => {
+            iw.close();
+            onDeleteStationRef.current?.(station);
+          });
+        });
+        abrir();
+      };
 
-      marker.addListener('click', () => {
-        if (infoWindowRef.current) {
-          infoWindowRef.current.setContent(content);
-          infoWindowRef.current.open(map, marker);
-        }
-      });
+      circle.addListener('click', () =>
+        abrirInfo(() => {
+          infoWindowRef.current?.setPosition({ lat: station.latitud, lng: station.longitud });
+          infoWindowRef.current?.open(map);
+        })
+      );
+
+      marker.addListener('click', () => abrirInfo(() => infoWindowRef.current?.open(map, marker)));
 
       circlesRef.current.push(circle);
       stationMarkersRef.current.push(marker);
     });
-  }, [mapLoaded, workstations]);
+  }, [mapLoaded, workstations, colocacion?.activo]);
+
+  // 2b. Estación nueva en preparación: círculo editable (se arrastra para mover y se estira desde el borde para cambiar el radio)
+  useEffect(() => {
+    if (!mapLoaded || !mapInstanceRef.current || !window.google) return;
+    const map = mapInstanceRef.current;
+    map.setOptions({ draggableCursor: colocacion?.activo ? 'crosshair' : undefined });
+
+    if (!colocacion?.activo || !colocacion.punto) {
+      draftCircleRef.current?.setMap(null);
+      draftCircleRef.current = null;
+      draftMarkerRef.current?.setMap(null);
+      draftMarkerRef.current = null;
+      return;
+    }
+
+    const center = { lat: colocacion.punto.lat, lng: colocacion.punto.lng };
+    const radio = Math.max(1, colocacion.radio || 1);
+    const color = colocacion.color || '#3B82F6';
+
+    if (!draftCircleRef.current) {
+      const circle = new window.google.maps.Circle({
+        map,
+        center,
+        radius: radio,
+        editable: true,
+        draggable: true,
+        strokeColor: color,
+        strokeOpacity: 1,
+        strokeWeight: 2,
+        fillColor: color,
+        fillOpacity: 0.28,
+        zIndex: 500,
+      });
+      circle.addListener('radius_changed', () => {
+        const nuevo = Math.min(5000, Math.max(1, Math.round(circle.getRadius())));
+        if (nuevo !== Math.round(colocacionRef.current?.radio ?? -1)) onColocacionChangeRef.current?.({ radio: nuevo });
+      });
+      circle.addListener('dragend', () => {
+        const c = circle.getCenter();
+        if (c) onColocacionChangeRef.current?.({ lat: c.lat(), lng: c.lng() });
+      });
+      // Un clic dentro del círculo también reubica el punto (si no, el círculo taparía el mapa)
+      circle.addListener('click', (e: google.maps.MapMouseEvent) => {
+        if (e.latLng) onColocacionChangeRef.current?.({ lat: e.latLng.lat(), lng: e.latLng.lng() });
+      });
+      draftCircleRef.current = circle;
+    } else {
+      const circle = draftCircleRef.current;
+      circle.setCenter(center);
+      if (Math.abs(circle.getRadius() - radio) > 0.5) circle.setRadius(radio);
+      circle.setOptions({ strokeColor: color, fillColor: color });
+    }
+
+    const icono = {
+      path: window.google.maps.SymbolPath.CIRCLE,
+      scale: 6,
+      fillColor: color,
+      fillOpacity: 1,
+      strokeColor: '#FFFFFF',
+      strokeWeight: 2.5,
+    };
+    if (!draftMarkerRef.current) {
+      draftMarkerRef.current = new window.google.maps.Marker({ map, position: center, icon: icono, clickable: false, zIndex: 600 });
+    } else {
+      draftMarkerRef.current.setPosition(center);
+      draftMarkerRef.current.setIcon(icono);
+    }
+  }, [mapLoaded, colocacion?.activo, colocacion?.punto?.lat, colocacion?.punto?.lng, colocacion?.radio, colocacion?.color]);
 
   // 3. Renderizar Trabajadores Activos
   useEffect(() => {
@@ -231,9 +326,8 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
     activeWorkers.forEach((worker) => {
       if (!worker.latitud || !worker.longitud) return;
 
-      const isInside = worker.dentro_de_estacion;
       const sinSenal = (worker.segundos_sin_ping ?? 0) > 90; // sin puntos GPS desde hace más de 90 s
-      const markerColor = sinSenal ? '#64748b' : isInside ? '#1f7a4d' : '#b45f06';
+      const markerColor = sinSenal ? '#64748b' : worker.dentro_de_estacion ? '#1f7a4d' : '#b45f06';
       const initials = worker.nombre_usuario
         .split(' ')
         .slice(0, 2)
@@ -241,9 +335,10 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
         .join('')
         .toUpperCase();
 
+      // Punto redondo azul con las iniciales; el borde indica el estado (verde en estación, ámbar fuera, gris sin señal)
       const svgIcon = {
         url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
-          <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect x="5" y="5" width="30" height="30" fill="#1c42ba" stroke="${markerColor}" stroke-width="3" /><text x="20" y="25" fill="#FFFFFF" font-size="11" font-family="Archivo, sans-serif" font-weight="700" text-anchor="middle">${initials}</text></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" fill="#1c42ba" stroke="${markerColor}" stroke-width="3.5" /><text x="20" y="24.5" fill="#FFFFFF" font-size="11" font-family="Archivo, sans-serif" font-weight="700" text-anchor="middle">${initials}</text></svg>
         `)}`,
         scaledSize: new window.google.maps.Size(40, 40),
         anchor: new window.google.maps.Point(20, 20),
@@ -257,71 +352,8 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
         zIndex: 1000,
       });
 
-      const horaIngreso = worker.hora_ingreso
-        ? new Date(worker.hora_ingreso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : '--:--';
-
-      const buildContent = (photoUrl: string | null) => `
-        <div style="font-family: Archivo, sans-serif; padding: 6px; min-width: 220px;">
-          <div style="display: flex; justify-content: space-between; align-items: start;">
-            <div>
-              <h4 style="font-size: 13px; font-weight: 800; color: #0F172A; margin: 0;">${worker.nombre_usuario}</h4>
-              <p style="font-size: 11px; color: #64748B; margin: 2px 0 0 0;">${worker.cargo}</p>
-            </div>
-            <span style="font-size: 10px; font-weight: bold; background: #F1F5F9; color: #334155; padding: 2px 6px; border-radius: 0; font-family: monospace;">
-              ${worker.codigo_empleado}
-            </span>
-          </div>
-
-          <div style="margin-top: 8px;">
-            ${
-              isInside
-                ? `<div style="display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: bold; color: #047857; background: #ECFDF5; border: 1px solid #A7F3D0; padding: 4px 8px; border-radius: 0;">
-                    En Estación: ${worker.estacion_nombre || 'Asignada'}
-                   </div>`
-                : `<div style="display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: bold; color: #B45309; background: #FFFBEB; border: 1px solid #FDE68A; padding: 4px 8px; border-radius: 0;">
-                    Fuera de estación asignada
-                   </div>`
-            }
-          </div>
-
-          <div style="margin-top: 8px; border-top: 1px solid #F1F5F9; padding-top: 6px; font-size: 11px; color: #64748B;">
-            <div style="display: flex; justify-content: space-between;">
-              <span>Ingreso:</span>
-              <strong style="color: #0F172A;">${horaIngreso}</strong>
-            </div>
-            <div style="display: flex; justify-content: space-between; margin-top: 2px;">
-              <span>Precisión GPS:</span>
-              <strong style="color: #2563EB;">±${Math.round(worker.precision || 10)}m</strong>
-            </div>
-          </div>
-
-          ${
-            photoUrl
-              ? `<div style="margin-top: 8px; border-top: 1px solid #F1F5F9; padding-top: 6px; text-align: center;">
-                  <span style="font-size: 10px; font-weight: bold; color: #475569; display: block; margin-bottom: 4px;">Evidencia Fotográfica de Entrada</span>
-                  <img src="${photoUrl}" style="width: 100%; max-height: 120px; object-fit: cover; border-radius: 0; border: 1px solid #E2E8F0;" />
-                </div>`
-              : ''
-          }
-        </div>
-      `;
-
+      // Al tocar el punto solo se selecciona al trabajador (se resalta en la lista y el mapa se centra en él)
       marker.addListener('click', () => {
-        if (infoWindowRef.current) {
-          const infoWindow = infoWindowRef.current;
-          infoWindow.setContent(buildContent(null));
-          infoWindow.open(map, marker);
-          // La foto se descarga solo al abrir la ventana y se agrega cuando llega
-          if (worker.tiene_foto_ingreso && worker.asistencia_id) {
-            api
-              .fetchPhoto(`/photos/attendance/${worker.asistencia_id}/in`)
-              .then((url) => {
-                if (infoWindowRef.current === infoWindow) infoWindow.setContent(buildContent(url));
-              })
-              .catch(() => {});
-          }
-        }
         if (onSelectWorker) onSelectWorker(worker);
       });
 
@@ -345,35 +377,19 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
     <div className="relative h-[550px] w-full overflow-hidden border border-slate-300">
       <div ref={mapContainerRef} className="w-full h-full bg-slate-100" />
 
-      {/* Botón superior de configuración */}
-      <div className="absolute top-3 left-3 z-10 flex items-center space-x-2">
-        <button
-          onClick={() => setShowKeyModal(true)}
-          className="btn-secondary btn-sm shadow-sm"
-        >
-          <Key className="w-3.5 h-3.5 text-blue-600" />
-          <span>{apiKey ? 'API Key Google' : 'Configurar API Key'}</span>
-        </button>
-
-        <span className="hidden items-center border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 shadow-sm sm:inline-flex">
-          <Layers className="w-3 h-3 text-blue-400 mr-1" />
-          Google Maps Oficial
-        </span>
-      </div>
-
       {/* Leyenda */}
       <div className="pointer-events-auto absolute bottom-5 right-5 z-10 space-y-1.5 border border-slate-300 bg-white p-3 text-sm text-slate-700 shadow-md">
         <p className="mb-1 text-sm font-semibold text-slate-900">Leyenda</p>
         <div className="flex items-center space-x-2">
-          <span className="inline-block h-3 w-3 bg-green-700"></span>
+          <span className="inline-block h-3 w-3 bg-green-700" style={{ borderRadius: '50%' }}></span>
           <span>Trabajador en su estación</span>
         </div>
         <div className="flex items-center space-x-2">
-          <span className="inline-block h-3 w-3 bg-amber-600"></span>
+          <span className="inline-block h-3 w-3 bg-amber-600" style={{ borderRadius: '50%' }}></span>
           <span>Trabajador fuera de zona</span>
         </div>
         <div className="flex items-center space-x-2">
-          <span className="inline-block h-3 w-3 bg-slate-500"></span>
+          <span className="inline-block h-3 w-3 bg-slate-500" style={{ borderRadius: '50%' }}></span>
           <span>Sin señal GPS reciente</span>
         </div>
         <div className="flex items-center space-x-2">

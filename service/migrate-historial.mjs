@@ -1,5 +1,6 @@
 // Índices para que el historial y la retención sigan siendo rápidos con muchos registros:
 //   - HistorialUbicaciones(fecha_registro): borrar/consultar puntos GPS por fecha
+//   - HistorialUbicaciones(asistencia_id, fecha_registro): ver el recorrido de un turno
 //   - RegistroAsistencia(hora_ingreso):     filtrar y paginar el historial por fecha
 //
 // Uso:   node service/migrate-historial.mjs            (aplica los cambios)
@@ -10,6 +11,8 @@ import { dbConfig } from './config.mjs';
 const dryRun = process.argv.includes('--dry-run');
 const indices = [
   { nombre: 'IX_HistorialUbicaciones_fecha', tabla: 'HistorialUbicaciones', columnas: 'fecha_registro' },
+  // Recorrido de un turno (panel de administración): los puntos de UN turno en orden de hora
+  { nombre: 'IX_HistorialUbicaciones_asistencia', tabla: 'HistorialUbicaciones', columnas: 'asistencia_id, fecha_registro' },
   { nombre: 'IX_RegistroAsistencia_hora_ingreso', tabla: 'RegistroAsistencia', columnas: 'hora_ingreso DESC' },
 ];
 

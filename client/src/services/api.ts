@@ -5,6 +5,7 @@ import type {
   ResumenDashboard,
   DatosTrabajadorEnVivo,
   AuditoriaFraudeFacial,
+  RecorridoTurno,
 } from '../types';
 
 // URL base del API:
@@ -239,6 +240,11 @@ export const api = {
     return request('/workstations', { method: 'POST', body: JSON.stringify(data) });
   },
 
+  /** Elimina (da de baja) una estación. El historial conserva su nombre. */
+  async deleteWorkstation(id: number): Promise<{ exito: boolean; id: number; nombre: string }> {
+    return request(`/workstations/${id}`, { method: 'DELETE' });
+  },
+
   // Extraer coordenadas de un link de Google Maps
   async parseGoogleMapsUrl(url: string): Promise<{ latitud: number; longitud: number; nombreSugerido?: string; urlResuelta?: string }> {
     return request('/workstations/parse-maps-url', { method: 'POST', body: JSON.stringify({ url }) });
@@ -298,6 +304,11 @@ export const api = {
     });
   },
 
+  /** Puntos GPS de un turno, en orden, para dibujar el recorrido (administración). */
+  async getRoute(asistenciaId: number): Promise<RecorridoTurno> {
+    return request(`/attendance/${asistenciaId}/route`);
+  },
+
   // Obtener Auditorías de Fraude
   async getFraudLogs(): Promise<AuditoriaFraudeFacial[]> {
     return request('/attendance/fraud-logs');
@@ -317,6 +328,13 @@ export const api = {
   /** Token que usa el servicio nativo de Android para enviar la ubicación del turno activo con la app cerrada. */
   async getTrackToken(): Promise<{ token: string; asistenciaId: number; vigenciaHoras: number }> {
     return request('/location/track-token', { method: 'POST' });
+  },
+
+  /** Última versión publicada de la app Android (null si no hay ninguna). Es público: sirve también antes de iniciar sesión. */
+  async getAppVersion(): Promise<{
+    android: { versionCode: number; versionName: string; minVersionCode: number; url: string; notas: string } | null;
+  }> {
+    return request('/app/version', {}, { auth: false });
   },
 
   /** Precisión GPS que exige el servidor (metros) y antigüedad máxima de la lectura. */

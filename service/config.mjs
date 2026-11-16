@@ -56,6 +56,8 @@ export const config = {
   gpsMaxAgeMs: Number(env.GPS_MAX_AGE_MS || 30000),
   // Vigencia (horas) del token que usa el servicio nativo de Android para enviar ubicaciones con la app cerrada
   trackTokenHours: Number(env.TRACK_TOKEN_HOURS || 18),
+  // Archivo version.json que se publica junto al APK; la app Android lo consulta para avisar de versiones nuevas
+  androidVersionFile: env.ANDROID_VERSION_FILE || '/var/www/smi_descargas/version.json',
   sessionHours: Number(env.SESSION_HOURS || 12),
   adminSessionHours: Number(env.ADMIN_SESSION_HOURS || 8),
   // TLS opcional directo en Node (si no se usa un proxy inverso como nginx/Caddy)

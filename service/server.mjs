@@ -334,6 +334,35 @@ app.get('/api/health', (req, res) => {
   res.json({ estado: 'ok', fecha: new Date().toISOString() });
 });
 
+// Última versión de la app Android. Se lee de version.json (que se sube junto con el APK), así publicar una
+// versión nueva no requiere reiniciar el servidor. Es público: solo contiene el número de versión y el enlace.
+let versionAppCache = null; // { t, data }
+function leerVersionAndroid() {
+  if (versionAppCache && Date.now() - versionAppCache.t < 30_000) return versionAppCache.data;
+  let data = null;
+  try {
+    const j = JSON.parse(fs.readFileSync(config.androidVersionFile, 'utf8'));
+    const url = typeof j.url === 'string' ? j.url.trim() : '';
+    if (Number.isInteger(j.versionCode) && j.versionCode > 0 && /^https?:\/\//.test(url) && url.length <= 300) {
+      data = {
+        versionCode: j.versionCode,
+        versionName: typeof j.versionName === 'string' ? j.versionName.slice(0, 20) : String(j.versionCode),
+        minVersionCode: Number.isInteger(j.minVersionCode) && j.minVersionCode > 0 ? j.minVersionCode : 0,
+        url,
+        notas: typeof j.notas === 'string' ? j.notas.slice(0, 200) : '',
+      };
+    }
+  } catch {
+    /* sin archivo o con formato inválido: no se avisa de nada */
+  }
+  versionAppCache = { t: Date.now(), data };
+  return data;
+}
+app.get('/api/app/version', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.json({ android: leerVersionAndroid() });
+});
+
 // Lista mínima para la pantalla de ingreso del trabajador (sin datos sensibles)
 app.get('/api/public/workers', async (req, res) => {
   try {
@@ -518,6 +547,39 @@ app.post('/api/workstations', requireAuth(ROLES_ADMIN), async (req, res) => {
     estacionesCache = null; // la próxima consulta vuelve a leer las estaciones
     io.emit('workstations_updated', nuevaEstacion);
     res.status(201).json(nuevaEstacion);
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Eliminar una estación. Es una baja lógica (activo = 0): el historial de asistencia y los recorridos conservan
+// su nombre, pero deja de usarse para detectar si un trabajador está dentro de zona.
+app.delete('/api/workstations/:id', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Solicitud inválida' });
+
+    const p = await getPool();
+    const est = await p.request().input('id', sql.Int, id)
+      .query('SELECT id, codigo, nombre FROM EstacionesTrabajo WHERE id = @id AND activo = 1');
+    if (!est.recordset.length) return res.status(404).json({ error: 'Estación no encontrada' });
+    const { codigo, nombre } = est.recordset[0];
+
+    // El código es único: se le añade un sufijo para poder volver a usarlo en una estación nueva
+    const sufijo = `~del${id}`;
+    const codigoNuevo = `${String(codigo).slice(0, 50 - sufijo.length)}${sufijo}`;
+
+    await p.request().input('id', sql.Int, id).input('codigo', sql.VarChar(50), codigoNuevo).query(`
+      UPDATE EstacionesTrabajo SET activo = 0, codigo = @codigo WHERE id = @id;
+      -- los trabajadores que figuraban dentro de esa estación quedan sin estación hasta su próximo punto GPS
+      UPDATE UbicacionesEnVivo SET estacion_actual_id = NULL, dentro_de_estacion = 0 WHERE estacion_actual_id = @id;
+    `);
+
+    estacionesCache = null; // la próxima consulta vuelve a leer las estaciones
+    lastPings.clear();      // las geocercas guardadas por trabajador ya no son válidas
+    io.emit('workstations_deleted', { id });
+    console.log(`🗑️ [ESTACIÓN] ${req.user.id} eliminó la estación ${id} (${codigo} · ${nombre}).`);
+    res.json({ exito: true, id, nombre });
   } catch (err) {
     fail(res, err);
   }
@@ -1489,6 +1551,45 @@ app.post('/api/push/alertas/:id/leida', requireAuth(ROLES_WORKER), async (req, r
       emitStaff('alerta_leida', { alertaId: id, usuarioId: req.user.id, fecha: new Date().toISOString() });
     }
     res.json({ exito: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Recorrido de un turno: todos los puntos GPS guardados entre la entrada y la salida (o hasta ahora, si sigue activo)
+app.get('/api/attendance/:id/route', requireAuth(ROLES_STAFF), async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Solicitud inválida' });
+
+    const p = await getPool();
+    const turno = await p.request().input('id', sql.Int, id).query(`
+      SELECT a.id, a.usuario_id, u.nombre AS nombre_usuario, u.codigo_empleado, u.cargo,
+             a.hora_ingreso, a.hora_salida, a.estado,
+             a.latitud_ingreso, a.longitud_ingreso, a.latitud_salida, a.longitud_salida
+      FROM RegistroAsistencia a JOIN Usuarios u ON u.id = a.usuario_id
+      WHERE a.id = @id`);
+    if (!turno.recordset.length) return res.status(404).json({ error: 'Turno no encontrado' });
+
+    // Un turno de 8 h a un punto cada 15 s son ~1 900 puntos; el tope evita respuestas enormes ante datos anómalos
+    const puntos = await p.request().input('id', sql.Int, id).query(`
+      SELECT TOP (20000) latitud, longitud, precision, estacion_id, fecha_registro
+      FROM HistorialUbicaciones
+      WHERE asistencia_id = @id
+      ORDER BY fecha_registro ASC, id ASC`);
+    const reloj = await p.request().query('SELECT GETDATE() AS ahora');
+
+    res.json({
+      ahora: reloj.recordset[0].ahora,
+      asistencia: turno.recordset[0],
+      puntos: puntos.recordset.map((r) => ({
+        lat: r.latitud,
+        lng: r.longitud,
+        precision: r.precision,
+        estacionId: r.estacion_id,
+        fecha: r.fecha_registro,
+      })),
+    });
   } catch (err) {
     fail(res, err);
   }

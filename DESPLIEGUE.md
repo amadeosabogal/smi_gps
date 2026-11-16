@@ -136,6 +136,25 @@ Cada trabajador debe conceder en el celular: ubicación precisa, **"Permitir tod
 - Para publicar una versión nueva, sube `versionCode` (y `versionName`) en `client/android/app/build.gradle`: Android no instala encima una versión con el mismo `versionCode`.
 - La versión de entrega solo admite HTTPS; la de depuración también HTTP (pruebas locales).
 
+**Aviso de nueva versión dentro de la app:** al abrirla (y al volver a ella), la app consulta `GET /api/app/version`, que lee el archivo `version.json` junto al APK. Si el `versionCode` publicado es mayor que el instalado, muestra un aviso con el botón **Descargar** (abre el APK en el navegador) y **Ahora no** (no vuelve a avisar de esa versión). Para publicar una versión nueva:
+1. En `client/android/app/build.gradle` sube `versionCode` (entero, siempre mayor) y `versionName`.
+2. Compila el APK firmado (ver arriba) y súbelo, **reemplazando** `/var/www/smi_descargas/smi-gps.apk`.
+3. Edita (o crea) `/var/www/smi_descargas/version.json` **después** de subir el APK:
+```json
+{
+  "versionCode": 2,
+  "versionName": "1.0.1",
+  "minVersionCode": 1,
+  "url": "https://asistencia.smi-peru.com/descargas/smi-gps.apk",
+  "notas": "Qué cambia en esta versión (máx. 200 caracteres)"
+}
+```
+`minVersionCode` es la versión mínima aceptable: quien tenga una menor ve el aviso en rojo y **no puede cerrarlo** (no bloquea la app ni detiene el rastreo). Usa `0` o `1` si no quieres forzar a nadie. No hace falta reiniciar el servidor (se relee cada 30 s). La ruta del archivo se puede cambiar con `ANDROID_VERSION_FILE` en `service/.env`.
+El aviso existe solo desde la versión 1.0.1 de la app: quien tenga la 1.0.0 debe instalar la 1.0.1 una vez a mano.
+
+### Recorrido de un turno (panel de administración)
+En **Historial de asistencia** (botón "Ver recorrido" de cada turno) y en **Personal en Turno** (turnos activos) se abre un visor con el recorrido sobre el mapa: tramos verdes dentro de una estación y naranjas fuera de zona, huecos de señal punteados (más de 90 s sin ubicación), distancia, tiempo dentro/fuera y reproducción del recorrido. Un turno activo se actualiza solo cada 15 s. Lee los puntos de `HistorialUbicaciones`, por lo que **desaparecen del visor cuando la retención los borra**. Antes de usarlo en producción ejecuta una vez `npm run migrate-historial` (crea el índice `IX_HistorialUbicaciones_asistencia`; con muchos puntos tarda un poco).
+
 Pendiente para producción: subir el servidor con los endpoints nuevos (`/api/location/batch` y `/api/location/track-token`) y publicar el APK en una ruta del dominio.
 
 ## 5. Qué protege el sistema

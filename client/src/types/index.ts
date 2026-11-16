@@ -95,3 +95,41 @@ export interface ResumenDashboard {
   dentroEstacionConteo: number;
   fueraEstacionConteo: number;
 }
+
+// Modo "colocar estación en el mapa": el administrador marca el punto con el cursor y ajusta el radio
+export interface ColocacionEstacion {
+  activo: boolean;
+  punto: { lat: number; lng: number } | null;
+  radio: number;
+  color: string;
+}
+
+export interface CambioColocacion {
+  lat?: number;
+  lng?: number;
+  radio?: number;
+}
+
+// Recorrido de un turno (puntos GPS guardados entre la entrada y la salida)
+export interface PuntoRecorrido {
+  lat: number;
+  lng: number;
+  precision: number | null;
+  estacionId: number | null;
+  fecha: string;
+}
+
+export interface RecorridoTurno {
+  ahora: string;
+  asistencia: {
+    id: number;
+    usuario_id: number;
+    nombre_usuario: string;
+    codigo_empleado: string;
+    cargo?: string;
+    hora_ingreso: string;
+    hora_salida: string | null;
+    estado: 'activo' | 'completado';
+  };
+  puntos: PuntoRecorrido[];
+}

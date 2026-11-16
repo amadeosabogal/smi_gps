@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api, auth } from '../services/api';
 import { socket, connectSocket, disconnectSocket } from '../services/socket';
-import { LiveMap } from '../components/LiveMap';
 import { GoogleLiveMap } from '../components/GoogleLiveMap';
+import { StationPlacementPanel } from '../components/StationPlacementPanel';
+import { RouteHistoryModal } from '../components/RouteHistoryModal';
 import { EnrolFaceModal } from '../components/EnrolFaceModal';
 import { AuthLayout } from '../components/AuthLayout';
 import { BrandLogo } from '../components/BrandLogo';
@@ -21,7 +22,7 @@ import {
   Download,
   Search,
   Plus,
-  Layers,
+  Trash2,
   LogOut,
   X,
   Link,
@@ -139,7 +140,6 @@ export const AdminPage: React.FC = () => {
 
   // Tabs & filters
   const [activeTab, setActiveTab] = useState<'map' | 'logs' | 'workers' | 'fraud' | 'stations'>('map');
-  const [mapProvider, setMapProvider] = useState<'google' | 'leaflet'>('google');
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [selectedWorker, setSelectedWorker] = useState<DatosTrabajadorEnVivo | null>(null);
 
@@ -152,6 +152,13 @@ export const AdminPage: React.FC = () => {
   const [newRadius, setNewRadius] = useState('50');
   const [newColor, setNewColor] = useState('#3B82F6');
   const [isSavingStation, setIsSavingStation] = useState(false);
+
+  // Recorrido de un turno (visor con mapa y reproducción)
+  const [rutaTurnoId, setRutaTurnoId] = useState<number | null>(null);
+
+  // Registrar una estación directamente sobre el mapa en tiempo real
+  const [colocando, setColocando] = useState<boolean>(false);
+  const [puntoNuevo, setPuntoNuevo] = useState<{ lat: number; lng: number } | null>(null);
 
   // New Worker Modal state
   const [showNewWorkerModal, setShowNewWorkerModal] = useState<boolean>(false);
@@ -451,7 +458,11 @@ export const AdminPage: React.FC = () => {
     });
 
     socket.on('workstations_updated', (newStation: EstacionTrabajo) => {
-      setWorkstations((prev) => [...prev, newStation]);
+      setWorkstations((prev) => (prev.some((s) => s.id === newStation.id) ? prev : [...prev, newStation]));
+    });
+
+    socket.on('workstations_deleted', ({ id }: { id: number }) => {
+      setWorkstations((prev) => prev.filter((s) => s.id !== id));
     });
 
     return () => {
@@ -466,6 +477,7 @@ export const AdminPage: React.FC = () => {
       socket.off('user_face_enrolled');
       socket.off('alerta_leida');
       socket.off('workstations_updated');
+      socket.off('workstations_deleted');
     };
   }, [isAdminAuthenticated, loadLive, loadHeavy, refreshLists, scheduleHeavyReload]);
 
@@ -626,6 +638,105 @@ export const AdminPage: React.FC = () => {
       alert(err.message || 'No se pudo exportar el historial');
     } finally {
       setExporting(false);
+    }
+  };
+
+  // --- Nueva estación desde el mapa en tiempo real ---------------------------------------------
+  // Código sugerido: sigue la numeración de las estaciones existentes (EST-01, EST-02…)
+  const siguienteCodigoEstacion = () => {
+    let max = 0;
+    let prefijo = 'EST-';
+    for (const w of workstations) {
+      const m = String(w.codigo).match(/^(.*?)(\d+)$/);
+      if (m) {
+        prefijo = m[1] || prefijo;
+        max = Math.max(max, parseInt(m[2], 10));
+      }
+    }
+    return `${prefijo}${String(max + 1).padStart(2, '0')}`;
+  };
+
+  const iniciarColocacion = () => {
+    setActiveTab('map');
+    setPuntoNuevo(null);
+    setNewCode(siguienteCodigoEstacion());
+    setNewName('');
+    setNewRadius('50');
+    setNewColor('#3B82F6');
+    setColocando(true);
+  };
+
+  const cancelarColocacion = () => {
+    setColocando(false);
+    setPuntoNuevo(null);
+  };
+
+  const cambioColocacion = (c: { lat?: number; lng?: number; radio?: number }) => {
+    if (c.lat !== undefined && c.lng !== undefined) setPuntoNuevo({ lat: c.lat, lng: c.lng });
+    if (c.radio !== undefined) setNewRadius(String(c.radio));
+  };
+
+  // Aviso si la nueva geocerca se cruza con otra: al trabajador se le asigna la estación más cercana
+  const avisoSuperposicion = (() => {
+    if (!colocando || !puntoNuevo) return null;
+    const r = Number(newRadius);
+    if (!Number.isFinite(r)) return null;
+    const rad = (x: number) => (x * Math.PI) / 180;
+    for (const w of workstations) {
+      const a =
+        Math.sin(rad(w.latitud - puntoNuevo.lat) / 2) ** 2 +
+        Math.cos(rad(puntoNuevo.lat)) * Math.cos(rad(w.latitud)) * Math.sin(rad(w.longitud - puntoNuevo.lng) / 2) ** 2;
+      const dist = 6371e3 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      if (dist < r + w.radio_metros) {
+        return `Esta geocerca se cruza con "${w.codigo} · ${w.nombre}" (${Math.round(dist)} m entre centros). En la zona compartida se asignará la estación más cercana al trabajador.`;
+      }
+    }
+    return null;
+  })();
+
+  const guardarEstacionColocada = async () => {
+    if (!puntoNuevo || !newCode.trim() || !newName.trim()) return;
+    setIsSavingStation(true);
+    try {
+      await api.createWorkstation({
+        codigo: newCode.trim(),
+        nombre: newName.trim(),
+        latitud: puntoNuevo.lat,
+        longitud: puntoNuevo.lng,
+        radio_metros: Math.round(Number(newRadius)) || 50,
+        color: newColor,
+      });
+      setColocando(false);
+      setPuntoNuevo(null);
+      setNewCode('');
+      setNewName('');
+      loadData();
+    } catch (err: any) {
+      alert(err.message || 'Error al guardar la estación');
+    } finally {
+      setIsSavingStation(false);
+    }
+  };
+
+  // Si se cambia de pestaña, se cancela el modo de colocación (el mapa deja de estar a la vista)
+  useEffect(() => {
+    if (activeTab !== 'map') cancelarColocacion();
+  }, [activeTab]);
+
+  // Eliminar una estación (con confirmación: es una baja que no se puede deshacer desde el panel)
+  const handleDeleteStation = async (st: EstacionTrabajo) => {
+    const ok = window.confirm(
+      `¿Eliminar la estación "${st.codigo} · ${st.nombre}"?\n\n` +
+        'Dejará de usarse para saber si los trabajadores están dentro de zona. ' +
+        'El historial de asistencia y los recorridos conservan su nombre.\n\nEsta acción no se puede deshacer.'
+    );
+    if (!ok) return;
+    try {
+      await api.deleteWorkstation(st.id);
+      setWorkstations((prev) => prev.filter((s) => s.id !== st.id));
+      loadData();
+    } catch (err: any) {
+      alert(err.message || 'No se pudo eliminar la estación');
     }
   };
 
@@ -876,6 +987,22 @@ export const AdminPage: React.FC = () => {
                   </button>
                 )}
 
+                {activeTab === 'map' && (
+                  <button
+                    onClick={colocando ? cancelarColocacion : iniciarColocacion}
+                    className={`${colocando ? 'btn-secondary' : 'btn-primary'} whitespace-nowrap`}
+                  >
+                    {colocando ? (
+                      'Cancelar registro de estación'
+                    ) : (
+                      <>
+                        <Plus className="h-4 w-4" />
+                        Registrar nueva estación
+                      </>
+                    )}
+                  </button>
+                )}
+
                 {activeTab === 'stations' && (
                   <button onClick={() => setShowNewStationModal(true)} className="btn-primary whitespace-nowrap">
                     <Plus className="h-4 w-4" />
@@ -889,60 +1016,39 @@ export const AdminPage: React.FC = () => {
             {activeTab === 'map' && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 flex flex-col space-y-2">
-                  {/* Selector de Motor de Mapa */}
-                  <div className="flex items-center justify-between bg-white px-3 py-1.5 rounded-xl border border-slate-200 shadow-sm text-xs">
-                    <span className="font-bold text-slate-700 flex items-center">
-                      <Layers className="w-3.5 h-3.5 mr-1 text-blue-600" />
-                      Motor Cartográfico:
-                    </span>
-                    <div className="flex items-center space-x-1 bg-slate-100 p-0.5 rounded-lg">
-                      <button
-                        onClick={() => setMapProvider('google')}
-                        className={`px-3 py-1 rounded-md font-bold text-xs transition cursor-pointer ${
- mapProvider === 'google'
- ? 'bg-blue-600 text-white shadow-sm'
- : 'text-slate-600 hover:text-slate-900'
- }`}
-                      >
-                        Google Maps Oficial
-                      </button>
-                      <button
-                        onClick={() => setMapProvider('leaflet')}
-                        className={`px-3 py-1 rounded-md font-semibold text-xs transition cursor-pointer ${
- mapProvider === 'leaflet'
- ? 'bg-blue-600 text-white shadow-sm'
- : 'text-slate-600 hover:text-slate-900'
- }`}
-                      >
-                        OpenStreetMap
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Renderizado de Mapa según motor */}
-                  {mapProvider === 'google' ? (
-                    <GoogleLiveMap
-                      workstations={workstations}
-                      activeWorkers={activeWorkers}
-                      selectedWorker={selectedWorker}
-                      onSelectWorker={(w) => setSelectedWorker(w)}
-                      onMapClick={(lat, lng) => {
-                        setNewLat(lat.toFixed(6));
-                        setNewLng(lng.toFixed(6));
-                        setShowNewStationModal(true);
-                      }}
-                    />
-                  ) : (
-                    <LiveMap
-                      workstations={workstations}
-                      activeWorkers={activeWorkers}
-                      selectedWorker={selectedWorker}
-                      onSelectWorker={(w) => setSelectedWorker(w)}
-                    />
-                  )}
+                  <GoogleLiveMap
+                    workstations={workstations}
+                    activeWorkers={activeWorkers}
+                    selectedWorker={selectedWorker}
+                    onSelectWorker={(w) => setSelectedWorker(w)}
+                    colocacion={{ activo: colocando, punto: puntoNuevo, radio: Number(newRadius) || 50, color: newColor }}
+                    onColocacionChange={cambioColocacion}
+                    onDeleteStation={handleDeleteStation}
+                  />
                 </div>
 
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col h-[550px]">
+                {/* Mientras se registra una estación, el formulario ocupa el lugar de la lista de personal (el mapa queda a la vista) */}
+                {colocando && (
+                  <div className="h-[550px] overflow-y-auto">
+                    <StationPlacementPanel
+                      punto={puntoNuevo}
+                      codigo={newCode}
+                      onCodigo={setNewCode}
+                      nombre={newName}
+                      onNombre={setNewName}
+                      radio={newRadius}
+                      onRadio={setNewRadius}
+                      color={newColor}
+                      onColor={setNewColor}
+                      aviso={avisoSuperposicion}
+                      guardando={isSavingStation}
+                      onGuardar={guardarEstacionColocada}
+                      onCancelar={cancelarColocacion}
+                    />
+                  </div>
+                )}
+
+                <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col h-[550px] ${colocando ? 'hidden' : ''}`}>
                   <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                     <h3 className="font-bold text-sm text-slate-800">
                       Personal en Turno ({activeWorkers.length})
@@ -1029,6 +1135,18 @@ export const AdminPage: React.FC = () => {
                                     ? 'Alertas activadas'
                                     : 'Sin alertas activadas'}
                                 </span>
+                                {worker.asistencia_id && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setRutaTurnoId(worker.asistencia_id as number);
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg text-xs font-bold border bg-white text-slate-600 border-slate-300 hover:bg-slate-50 transition active:scale-95"
+                                  >
+                                    Ver recorrido
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -1161,12 +1279,13 @@ export const AdminPage: React.FC = () => {
                         <th className="px-4 py-3 text-center">Biometría</th>
                         <th className="px-4 py-3 text-right">Horas</th>
                         <th className="px-4 py-3 text-center">Estado</th>
+                        <th className="sticky right-0 bg-slate-50 px-4 py-3 text-center shadow-[-6px_0_6px_-6px_rgba(15,23,42,0.25)]">Recorrido</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {filteredLogs.length === 0 ? (
                         <tr>
-                          <td colSpan={12} className="px-4 py-8 text-center text-slate-400">
+                          <td colSpan={13} className="px-4 py-8 text-center text-slate-400">
                             No hay registros de asistencia en este rango.
                           </td>
                         </tr>
@@ -1300,6 +1419,11 @@ export const AdminPage: React.FC = () => {
                               >
                                 {log.estado === 'activo' ? 'Activo' : 'Completado'}
                               </span>
+                            </td>
+                            <td className="sticky right-0 bg-white px-4 py-3 text-center shadow-[-6px_0_6px_-6px_rgba(15,23,42,0.25)]">
+                              <button type="button" onClick={() => setRutaTurnoId(log.id)} className="btn-secondary btn-sm whitespace-nowrap">
+                                Ver recorrido
+                              </button>
                             </td>
                           </tr>
                         ))
@@ -1632,6 +1756,15 @@ export const AdminPage: React.FC = () => {
                         </span>
                       </div>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteStation(st)}
+                      className="mt-4 inline-flex items-center justify-center gap-1.5 border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-50"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Eliminar estación
+                    </button>
                   </div>
                 ))}
               </div>
@@ -1790,6 +1923,10 @@ export const AdminPage: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {rutaTurnoId !== null && (
+        <RouteHistoryModal asistenciaId={rutaTurnoId} workstations={workstations} onClose={() => setRutaTurnoId(null)} />
       )}
 
       {/* Modal: Vista Previa de Evidencia Fotográfica y Comparación Biométrica */}
