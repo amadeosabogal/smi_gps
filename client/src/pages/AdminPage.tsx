@@ -897,7 +897,7 @@ export const AdminPage: React.FC = () => {
     <div className="flex min-h-screen flex-col bg-slate-100">
       {/* Encabezado institucional */}
       <header className="sticky top-0 z-50 bg-brand-600 text-white">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+        <div className="flex h-16 w-full items-center justify-between px-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-4">
             <BrandLogo variant="blanco" className="h-10 w-auto" />
             <div className="hidden border-l border-white/30 pl-4 sm:block">
@@ -923,7 +923,7 @@ export const AdminPage: React.FC = () => {
       </header>
 
       {/* Contenido */}
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
+      <main className="w-full flex-1 px-4 py-6 sm:px-6 lg:px-8">
         {loading ? (
           <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3">
             <div className="h-10 w-10 animate-spin rounded-full border-4 border-brand-600 border-t-transparent" />
@@ -1054,7 +1054,7 @@ export const AdminPage: React.FC = () => {
 
                 {/* Mientras se registra una estación, el formulario ocupa el lugar de la lista de personal (el mapa queda a la vista) */}
                 {colocando && (
-                  <div className="h-[550px] overflow-y-auto">
+                  <div className="h-[calc(100vh-20rem)] min-h-[550px] overflow-y-auto">
                     <StationPlacementPanel
                       punto={puntoNuevo}
                       codigo={newCode}
@@ -1073,7 +1073,7 @@ export const AdminPage: React.FC = () => {
                   </div>
                 )}
 
-                <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col h-[550px] ${colocando ? 'hidden' : ''}`}>
+                <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col h-[calc(100vh-20rem)] min-h-[550px] ${colocando ? 'hidden' : ''}`}>
                   <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                     <h3 className="font-bold text-sm text-slate-800">
                       Personal en Turno ({activeWorkers.length})

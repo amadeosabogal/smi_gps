@@ -374,7 +374,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
   }, [mapLoaded, selectedWorker]);
 
   return (
-    <div className="relative h-[550px] w-full overflow-hidden border border-slate-300">
+    <div className="relative h-[calc(100vh-20rem)] min-h-[550px] w-full overflow-hidden border border-slate-300">
       <div ref={mapContainerRef} className="w-full h-full bg-slate-100" />
 
       {/* Leyenda */}
