@@ -201,6 +201,13 @@ En **Historial de asistencia** (botón "Ver recorrido" de cada turno) y en **Per
 
 Pendiente para producción: subir el servidor con los endpoints nuevos (`/api/location/batch` y `/api/location/track-token`) y publicar el APK en una ruta del dominio.
 
+### Limpiar los datos de prueba antes de producción
+`npm run limpiar-pruebas` borra **todo el historial** (asistencias y sus fotos, recorridos GPS, ubicaciones en vivo, almuerzos, alertas enviadas y alertas de fraude) y reinicia los contadores. **Conserva** usuarios (con su rostro y PIN), estaciones, calendario y suscripciones push.
+1. Sin opciones solo **muestra** qué borraría: `npm run limpiar-pruebas`.
+2. Para borrar: `npm run limpiar-pruebas -- --confirmar --respaldo "RUTA.bak"`. El respaldo (`BACKUP DATABASE`) se guarda en el equipo donde corre SQL Server; sin `--respaldo` lo borrado no se puede recuperar.
+3. Se niega a borrar si hay turnos activos: antes deben marcar salida (o forzarla desde el panel).
+4. Después: `pm2 restart smi-gps`.
+
 ## 5. Qué protege el sistema
 - Los PIN se guardan con hash (scrypt); el login se bloquea tras varios intentos fallidos.
 - Toda la API exige sesión; los trabajadores solo pueden operar sobre su propio usuario.
