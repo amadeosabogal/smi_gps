@@ -5,6 +5,7 @@ import { GoogleLiveMap } from '../components/GoogleLiveMap';
 import { StationPlacementPanel } from '../components/StationPlacementPanel';
 import { RouteHistoryModal } from '../components/RouteHistoryModal';
 import { CalendarioPanel } from '../components/CalendarioPanel';
+import { GestionTrabajadorModal } from '../components/GestionTrabajadorModal';
 import { EnrolFaceModal } from '../components/EnrolFaceModal';
 import { AuthLayout } from '../components/AuthLayout';
 import { BrandLogo } from '../components/BrandLogo';
@@ -174,6 +175,7 @@ export const AdminPage: React.FC = () => {
 
   // New Worker Modal state
   const [showNewWorkerModal, setShowNewWorkerModal] = useState<boolean>(false);
+  const [trabajadorGestion, setTrabajadorGestion] = useState<Usuario | null>(null); // datos personales (corregir, PIN, copia, baja)
   const [newWorkerCode, setNewWorkerCode] = useState<string>('');
   const [newWorkerName, setNewWorkerName] = useState<string>('');
   const [newWorkerCargo, setNewWorkerCargo] = useState<string>('Operador de Campo');
@@ -1691,7 +1693,7 @@ export const AdminPage: React.FC = () => {
  : 'bg-amber-100 text-amber-800 border border-amber-200'
  }`}
                               >
-                                {isEnrolled ? 'Enrolado' : 'Pendiente'}
+                                {!worker.activo ? 'De baja' : isEnrolled ? 'Enrolado' : 'Pendiente'}
                               </span>
                             </div>
 
@@ -1699,6 +1701,12 @@ export const AdminPage: React.FC = () => {
                               <div className="flex justify-between">
                                 <span className="text-slate-400">Rol Sistema:</span>
                                 <span className="font-semibold text-slate-700 capitalize">{worker.rol}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Aviso de privacidad:</span>
+                                <span className={`font-semibold ${worker.privacidad_aceptada_en ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                  {worker.privacidad_aceptada_en ? 'Aceptado' : 'Pendiente'}
+                                </span>
                               </div>
                               <div className="flex justify-between">
                                 <span className="text-slate-400">Vector Facial:</span>
@@ -1720,6 +1728,16 @@ export const AdminPage: React.FC = () => {
                               </button>
                             ) : (
                               <span className="text-xs text-slate-400">Sin biometría</span>
+                            )}
+
+                            {worker.rol === 'trabajador' && (
+                              <button
+                                type="button"
+                                onClick={() => setTrabajadorGestion(worker)}
+                                className="text-xs font-bold text-slate-700 hover:text-slate-900 hover:underline cursor-pointer"
+                              >
+                                Datos
+                              </button>
                             )}
 
                             <button
@@ -2342,6 +2360,14 @@ export const AdminPage: React.FC = () => {
       )}
 
       {/* Modal: Nuevo Trabajador */}
+      {trabajadorGestion && (
+        <GestionTrabajadorModal
+          trabajador={workersList.find((w) => w.id === trabajadorGestion.id) || trabajadorGestion}
+          onClose={() => setTrabajadorGestion(null)}
+          onCambio={() => loadData()}
+        />
+      )}
+
       {showNewWorkerModal && (
         <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200">

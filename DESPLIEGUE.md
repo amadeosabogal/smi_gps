@@ -201,6 +201,30 @@ En **Historial de asistencia** (botón "Ver recorrido" de cada turno) y en **Per
 
 Pendiente para producción: subir el servidor con los endpoints nuevos (`/api/location/batch` y `/api/location/track-token`) y publicar el APK en una ruta del dominio.
 
+### Protección de datos personales: plazos, aviso en la app y derechos del trabajador
+Complementa el aviso de privacidad y la guía para la empresa (documentos aparte). Todo se activa con una migración y variables en `service/.env`.
+
+**1. Borrado automático por plazos** (`service/retencion.mjs`; el servidor lo ejecuta solo cada 24 h)
+- `RETENCION_FOTOS_DIAS=N` borra las **fotos** de verificación (entrada, salida, almuerzo y alertas de fraude) de más de N días; la asistencia (horas) se conserva.
+- `RETENCION_REGISTROS_DIAS=N` borra las **asistencias terminadas** (con sus almuerzos y recorridos GPS), las alertas de fraude y los avisos de más de N días.
+- Los puntos GPS siguen con `RETENCION_UBICACIONES_DIAS`. Mínimo 30 días en los dos nuevos (7 en GPS); vacío = no borrar nunca. Nunca se tocan turnos activos.
+- A pedido: `npm run purgar-vencidos -- --fotos=365 --registros=1095` **solo cuenta**; con `--apply` borra. Es irreversible: haz un respaldo antes.
+- Los plazos que configures deben ser los mismos que figuran en el aviso que se entrega al trabajador.
+
+**2. Aviso de privacidad dentro de la app** (app Android 1.0.5 o posterior y web)
+- Una vez: `npm run migrate-privacidad` (tabla `AceptacionesPrivacidad`; con `--dry-run` solo simula) y `pm2 restart smi-gps`.
+- Completa en `service/.env` los datos de la empresa que ve el trabajador: `EMPRESA_NOMBRE`, `EMPRESA_RUC`, `EMPRESA_DOMICILIO`, `EMPRESA_CORREO_DATOS`, `EMPRESA_PROVEEDOR`, `EMPRESA_PAIS_SERVIDOR`, `EMPRESA_ALTERNATIVA_SIN_AUTORIZACION` y `EMPRESA_DIAS_ROSTRO_TRAS_CESE`. Los plazos que muestra salen de las variables `RETENCION_*`.
+- `EXIGIR_ACEPTACION_PRIVACIDAD=true` hace obligatorio el aviso: el trabajador debe marcar las tres autorizaciones (rostro, ubicación, datos) antes de usar la app. Queda guardado cuándo, qué versión y desde qué dispositivo. Quien ya tiene un turno abierto puede terminarlo. **Actívalo cuando todos tengan la app 1.0.5**: con una versión anterior la app no muestra el aviso y el servidor rechaza sus peticiones con un mensaje.
+- Si cambias el texto del aviso, sube `PRIVACIDAD_VERSION` (todos deberán aceptar de nuevo). La pestaña *Personal y biometría* muestra quién aceptó y quién está pendiente.
+
+**3. Derechos del trabajador desde el panel** (pestaña *Personal y biometría* → botón **Datos**; solo administradores)
+- **Corregir datos** (rectificación): nombre, cargo, correo y teléfono.
+- **Generar un PIN nuevo**: aleatorio, se muestra una sola vez (por ejemplo, si perdió el celular).
+- **Copia de sus datos** (acceso): archivo JSON con sus datos, asistencias, almuerzos, recorrido GPS, alertas y aceptaciones. "Con fotos" puede pesar mucho. No incluye el PIN ni la huella del rostro.
+- **Dar de baja**: desactiva la cuenta (su sesión deja de servir de inmediato), borra su foto de referencia, la huella del rostro y sus suscripciones de notificaciones. Se niega si tiene un turno activo (fuerza antes la salida). Se puede **Reactivar**; deberá registrar su rostro de nuevo.
+- **Eliminar todos sus datos** (cancelación): borra su usuario, asistencias, almuerzos, recorridos, alertas y fotos. **Irreversible**: pide escribir su código de empleado. Descarga antes una copia si hace falta.
+- Cada una de estas acciones queda en el registro del servidor (`pm2 logs smi-gps`, líneas `[DATOS]`).
+
 ### Limpiar los datos de prueba antes de producción
 `npm run limpiar-pruebas` borra **todo el historial** (asistencias y sus fotos, recorridos GPS, ubicaciones en vivo, almuerzos, alertas enviadas y alertas de fraude) y reinicia los contadores. **Conserva** usuarios (con su rostro y PIN), estaciones, calendario y suscripciones push.
 1. Sin opciones solo **muestra** qué borraría: `npm run limpiar-pruebas`.

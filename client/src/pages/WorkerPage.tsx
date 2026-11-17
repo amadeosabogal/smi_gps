@@ -14,6 +14,7 @@ import { syncPush, releasePush } from '../services/push';
 import { esAppNativa, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
 import { NativePermissionsModal } from '../components/NativePermissionsModal';
 import { DiaNoLaborable } from '../components/DiaNoLaborable';
+import { AvisoPrivacidad } from '../components/AvisoPrivacidad';
 
 export const WorkerPage: React.FC = () => {
   const [workers, setWorkers] = useState<Usuario[]>([]);
@@ -78,6 +79,8 @@ export const WorkerPage: React.FC = () => {
   const [diaBloqueado, setDiaBloqueado] = useState<{ fecha: string | null; motivo: string | null } | null>(null);
   const [comprobandoDia, setComprobandoDia] = useState<boolean>(false);
   const [hoyCalendario, setHoyCalendario] = useState<EstadoDiaHoy | null>(null);
+  // Aviso de privacidad: si la empresa lo exige y aún no lo aceptó, se muestra antes de cualquier otra pantalla
+  const [avisoPendiente, setAvisoPendiente] = useState<boolean>(false);
 
   // Carga inicial: lista pública de nombres para el ingreso y, si hay sesión, el perfil y las estaciones
   const loadData = useCallback(async () => {
@@ -164,6 +167,7 @@ export const WorkerPage: React.FC = () => {
     try {
       const workerInfo = await api.getMyShift();
       setDiaBloqueado(null);
+      setAvisoPendiente(false);
 
       if (workerInfo && workerInfo.estado_asistencia === 'activo') {
         setIsActiveShift(true);
@@ -227,6 +231,10 @@ export const WorkerPage: React.FC = () => {
         setDiaBloqueado({ fecha: err.data.fecha || null, motivo: err.data.motivo || null });
         geolocationService.stopTracking();
         if (esAppNativa) nativeTracker.detener();
+        return;
+      }
+      if (err?.data?.codigo === 'ACEPTACION_REQUERIDA') {
+        setAvisoPendiente(true);
         return;
       }
       console.error('Error verificando turno activo:', err);
@@ -851,6 +859,22 @@ export const WorkerPage: React.FC = () => {
           </div>
         )}
       </div>
+    );
+  }
+
+  // Aviso de privacidad pendiente: hay que leerlo y aceptarlo antes de usar la app
+  if (isAuthenticated && avisoPendiente) {
+    return (
+      <AvisoPrivacidad
+        onAceptado={() => {
+          setAvisoPendiente(false);
+          checkShiftStatus();
+        }}
+        onRechazar={() => {
+          alert('Sin su autorización la aplicación no puede registrar su asistencia. Consulte a su supervisor por la alternativa.');
+          handleLogout();
+        }}
+      />
     );
   }
 

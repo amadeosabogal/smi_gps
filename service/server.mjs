@@ -23,6 +23,8 @@ import {
   parseDescriptor,
 } from './auth.mjs';
 import { nombreFeriado } from './feriados-peru.mjs';
+import { purgarVencidos, MINIMO_DIAS } from './retencion.mjs';
+import { exportarDatos, darDeBaja, eliminarTodo } from './datos-trabajador.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -451,7 +453,55 @@ const loginIpLimiter = createLimiter({ max: config.loginIpMax, windowMs: 10 * 60
 const loginUserLimiter = createLimiter({ max: 8, windowMs: 15 * 60 * 1000 });
 const faceFailLimiter = createLimiter({ max: 5, windowMs: 10 * 60 * 1000 });
 
-function requireAuth(roles) {
+// ¿Sigue activo este trabajador? (una baja corta su acceso aunque su sesión no haya vencido). Caché corta.
+const activoCache = new Map(); // usuarioId -> { t, v }
+async function usuarioSigueActivo(usuarioId) {
+  const c = activoCache.get(usuarioId);
+  if (c && Date.now() - c.t < 15_000) return c.v;
+  const p = await getPool();
+  const r = await p.request().input('id', sql.Int, usuarioId).query('SELECT activo FROM Usuarios WHERE id = @id');
+  const v = r.recordset.length > 0 && Boolean(r.recordset[0].activo);
+  activoCache.set(usuarioId, { t: Date.now(), v });
+  return v;
+}
+
+// Aviso de privacidad: ¿ya aceptó la versión vigente? (tabla creada con: npm run migrate-privacidad)
+let privacidadTabla = false;
+async function checkPrivacidadTabla() {
+  try {
+    const p = await getPool();
+    const r = await p.request().query("SELECT OBJECT_ID('AceptacionesPrivacidad', 'U') AS id");
+    privacidadTabla = Boolean(r.recordset[0].id);
+    if (config.exigirAceptacionPrivacidad && !privacidadTabla) {
+      console.warn('⚠️ EXIGIR_ACEPTACION_PRIVACIDAD está activo pero falta la tabla: ejecuta  npm run migrate-privacidad  y reinicia.');
+    }
+  } catch (err) {
+    console.warn('No se pudo comprobar la tabla de aceptaciones del aviso de privacidad:', err.message);
+  }
+}
+const aceptoCache = new Map(); // usuarioId -> { t, v }
+async function aceptoPrivacidad(usuarioId) {
+  const c = aceptoCache.get(usuarioId);
+  if (c && Date.now() - c.t < 60_000) return c.v;
+  const p = await getPool();
+  const r = await p.request().input('u', sql.Int, usuarioId).input('v', sql.Int, config.privacidadVersion)
+    .query('SELECT 1 AS ok FROM AceptacionesPrivacidad WHERE usuario_id = @u AND version = @v');
+  const v = r.recordset.length > 0;
+  aceptoCache.set(usuarioId, { t: Date.now(), v });
+  return v;
+}
+// Bloqueo si el aviso es obligatorio y todavía no lo aceptó (quien ya tiene un turno activo puede terminarlo)
+async function bloqueoAceptacion(usuarioId) {
+  if (!config.exigirAceptacionPrivacidad || !privacidadTabla) return null;
+  if (await aceptoPrivacidad(usuarioId)) return null;
+  if (await turnoActivoDe(await getPool(), usuarioId)) return null;
+  return {
+    error: 'Debe leer y aceptar el aviso de privacidad para usar la aplicación. Abra la aplicación para aceptarlo (si no lo ve, actualice la app).',
+    codigo: 'ACEPTACION_REQUERIDA',
+  };
+}
+
+function requireAuth(roles, opts = {}) {
   // Las rutas de trabajador (roles = ROLES_WORKER) también se bloquean en un día no laborable
   const esRutaDeTrabajador = Boolean(roles && roles.includes('trabajador'));
   return async (req, res, next) => {
@@ -465,12 +515,29 @@ function requireAuth(roles) {
       return res.status(403).json({ error: 'No tienes permiso para esta acción.' });
     }
     req.user = { id: payload.sub, rol: payload.rol };
-    if (esRutaDeTrabajador && calendarioTablas) {
+    if (esRutaDeTrabajador) {
       try {
-        const bloqueo = await bloqueoDiaNoLaborable(payload.sub, 'sesión abierta');
-        if (bloqueo) return res.status(403).json(bloqueo);
+        if (!(await usuarioSigueActivo(payload.sub))) {
+          return res.status(401).json({ error: 'Su cuenta fue dada de baja. Comuníquese con la empresa.', codigo: 'CUENTA_DE_BAJA' });
+        }
       } catch (err) {
-        console.error('Calendario: no se pudo comprobar el día (se deja pasar):', err.message);
+        console.error('No se pudo comprobar si la cuenta sigue activa (se deja pasar):', err.message);
+      }
+      if (calendarioTablas) {
+        try {
+          const bloqueo = await bloqueoDiaNoLaborable(payload.sub, 'sesión abierta');
+          if (bloqueo) return res.status(403).json(bloqueo);
+        } catch (err) {
+          console.error('Calendario: no se pudo comprobar el día (se deja pasar):', err.message);
+        }
+      }
+      if (!opts.omitirAceptacion) {
+        try {
+          const bloqueo = await bloqueoAceptacion(payload.sub);
+          if (bloqueo) return res.status(403).json(bloqueo);
+        } catch (err) {
+          console.error('No se pudo comprobar la aceptación del aviso (se deja pasar):', err.message);
+        }
       }
     }
     next();
@@ -810,6 +877,55 @@ app.delete('/api/calendar/dias/:fecha/autorizados/:usuarioId', requireAuth(ROLES
   }
 });
 
+// ----- AVISO DE PRIVACIDAD (aceptación dentro de la app) -----
+
+// Datos para mostrar el aviso al trabajador: empresa, plazos y si ya lo aceptó
+app.get('/api/privacy/info', requireAuth(), async (req, res) => {
+  try {
+    const aceptada = privacidadTabla && req.user.rol === 'trabajador' ? await aceptoPrivacidad(req.user.id) : true;
+    res.json({
+      version: config.privacidadVersion,
+      exigida: config.exigirAceptacionPrivacidad && privacidadTabla,
+      aceptada,
+      empresa: config.empresa,
+      plazos: {
+        gpsDias: retencionDias >= 7 ? retencionDias : 0,
+        fotosDias: config.retencionFotosDias >= MINIMO_DIAS ? config.retencionFotosDias : 0,
+        registrosDias: config.retencionRegistrosDias >= MINIMO_DIAS ? config.retencionRegistrosDias : 0,
+      },
+    });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// El trabajador acepta el aviso: debe otorgar las tres autorizaciones (sin ellas la app no puede registrar su asistencia)
+app.post('/api/privacy/aceptar', requireAuth(ROLES_WORKER, { omitirAceptacion: true }), async (req, res) => {
+  try {
+    if (!privacidadTabla) {
+      return res.status(503).json({ error: 'La aceptación del aviso aún no está habilitada en el servidor. Avise al administrador.', codigo: 'PRIVACIDAD_NO_DISPONIBLE' });
+    }
+    const { rostro, ubicacion, datos } = req.body || {};
+    if (rostro !== true || ubicacion !== true || datos !== true) {
+      return res.status(400).json({ error: 'Para usar la aplicación debe otorgar las tres autorizaciones.', codigo: 'AUTORIZACIONES_INCOMPLETAS' });
+    }
+    const dispositivo = typeof req.headers['x-device-id'] === 'string' ? req.headers['x-device-id'].slice(0, 80) : null;
+    const p = await getPool();
+    await p.request()
+      .input('u', sql.Int, req.user.id).input('v', sql.Int, config.privacidadVersion).input('d', sql.VarChar(80), dispositivo)
+      .query(`
+        IF NOT EXISTS (SELECT 1 FROM AceptacionesPrivacidad WHERE usuario_id = @u AND version = @v)
+          INSERT INTO AceptacionesPrivacidad (usuario_id, version, autoriza_rostro, autoriza_ubicacion, autoriza_datos, dispositivo_id)
+          VALUES (@u, @v, 1, 1, 1, @d);
+      `);
+    aceptoCache.delete(req.user.id);
+    console.log(`🔏 [PRIVACIDAD] Usuario ${req.user.id} aceptó el aviso (versión ${config.privacidadVersion}).`);
+    res.json({ exito: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
 // Perfil de la sesión actual
 app.get('/api/auth/me', requireAuth(), async (req, res) => {
   try {
@@ -986,9 +1102,10 @@ app.get('/api/users', requireAuth(ROLES_STAFF), async (req, res) => {
     // Nunca se envían el PIN ni el descriptor facial al navegador
     // La foto de referencia NO viaja en la lista (pesa cientos de KB por usuario): se pide aparte en
     // /api/photos/user/:id/reference. foto_ref_bytes sirve de versión para el caché del navegador.
-    const result = await p.request().query(
+    const result = await p.request().input('v', sql.Int, config.privacidadVersion).query(
       `SELECT id, codigo_empleado, nombre, correo, rol, cargo, telefono, activo, facial_enrolado,
               ISNULL(DATALENGTH(foto_referencia_url), 0) AS foto_ref_bytes
+              ${privacidadTabla ? ', (SELECT MAX(a.aceptado_en) FROM AceptacionesPrivacidad a WHERE a.usuario_id = Usuarios.id AND a.version = @v) AS privacidad_aceptada_en' : ''}
          FROM Usuarios`
     );
     res.json(result.recordset);
@@ -1038,6 +1155,129 @@ app.post('/api/users', requireAuth(ROLES_ADMIN), async (req, res) => {
     const nuevoUsuario = result.recordset[0];
     emitStaff('user_created', nuevoUsuario);
     res.status(201).json({ ...nuevoUsuario, pinInicial });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ----- Gestión de datos del personal (rectificación, baja, acceso y supresión) -----
+
+// Devuelve el trabajador o responde el error; solo se gestionan cuentas de trabajador
+async function trabajadorParaGestion(req, res) {
+  const id = Number.parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) { res.status(400).json({ error: 'Solicitud inválida' }); return null; }
+  const p = await getPool();
+  const r = await p.request().input('id', sql.Int, id).query('SELECT id, codigo_empleado, nombre, rol, activo FROM Usuarios WHERE id = @id');
+  const u = r.recordset[0];
+  if (!u) { res.status(404).json({ error: 'Trabajador no encontrado' }); return null; }
+  if (u.rol !== 'trabajador') { res.status(400).json({ error: 'Esta acción solo se aplica a cuentas de trabajador.' }); return null; }
+  return u;
+}
+const olvidarUsuario = (id) => { activoCache.delete(id); aceptoCache.delete(id); turnoCache.delete(id); };
+
+// Corregir los datos del trabajador (rectificación)
+app.put('/api/users/:id', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    const u = await trabajadorParaGestion(req, res);
+    if (!u) return;
+    const { nombre, cargo, correo, telefono } = req.body || {};
+    const sets = [];
+    const rq = (await getPool()).request().input('id', sql.Int, u.id);
+    if (nombre !== undefined) {
+      if (typeof nombre !== 'string' || !nombre.trim()) return res.status(400).json({ error: 'El nombre no puede estar vacío' });
+      sets.push('nombre = @nombre'); rq.input('nombre', sql.NVarChar(150), nombre.trim().slice(0, 150));
+    }
+    if (cargo !== undefined) { sets.push('cargo = @cargo'); rq.input('cargo', sql.NVarChar(100), String(cargo || '').trim().slice(0, 100)); }
+    if (correo !== undefined) {
+      if (typeof correo !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo.trim())) return res.status(400).json({ error: 'Correo inválido' });
+      sets.push('correo = @correo'); rq.input('correo', sql.VarChar(150), correo.trim().slice(0, 150));
+    }
+    if (telefono !== undefined) { sets.push('telefono = @telefono'); rq.input('telefono', sql.VarChar(30), String(telefono || '').trim().slice(0, 30)); }
+    if (!sets.length) return res.status(400).json({ error: 'No hay nada que cambiar' });
+    try {
+      await rq.query(`UPDATE Usuarios SET ${sets.join(', ')} WHERE id = @id`);
+    } catch (err) {
+      if (err.number === 2627 || err.number === 2601) return res.status(400).json({ error: 'Ese correo ya está en uso por otra cuenta' });
+      throw err;
+    }
+    console.log(`🗂️ [DATOS] Admin ${req.user.id} corrigió los datos del trabajador ${u.id} (${sets.length} campo(s)).`);
+    res.json({ exito: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Nuevo PIN (por ejemplo, si perdió el celular): se genera uno aleatorio y se muestra UNA sola vez
+app.post('/api/users/:id/reset-pin', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    const u = await trabajadorParaGestion(req, res);
+    if (!u) return;
+    if (!pinColumnWide) return res.status(500).json({ error: 'Falta migrar la base de datos: ejecuta  node service/migrate-security.mjs' });
+    const pinNuevo = String(crypto.randomInt(100000, 999999));
+    const p = await getPool();
+    await p.request().input('id', sql.Int, u.id).input('pin', sql.VarChar(200), await hashPinAsync(pinNuevo)).query('UPDATE Usuarios SET pin = @pin WHERE id = @id');
+    loginUserLimiter.reset(`user:${u.id}`);
+    console.log(`🗂️ [DATOS] Admin ${req.user.id} cambió el PIN del trabajador ${u.id}.`);
+    res.json({ exito: true, pinNuevo });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Baja: desactiva la cuenta y borra su rostro. Con eliminarDatos=true borra además TODO su historial y su usuario (irreversible).
+app.post('/api/users/:id/baja', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    const u = await trabajadorParaGestion(req, res);
+    if (!u) return;
+    const { eliminarDatos, confirmar } = req.body || {};
+    const p = await getPool();
+    const activo = await p.request().input('u', sql.Int, u.id).query("SELECT id FROM RegistroAsistencia WHERE usuario_id = @u AND estado = 'activo'");
+    if (activo.recordset.length) {
+      return res.status(409).json({ error: 'El trabajador tiene un turno activo. Primero registre su salida o fuerce la salida desde el panel.', codigo: 'TURNO_ACTIVO' });
+    }
+    if (eliminarDatos === true) {
+      if (confirmar !== u.codigo_empleado) {
+        return res.status(400).json({ error: 'Para eliminar todos los datos escriba el código de empleado exacto.', codigo: 'CONFIRMACION_INVALIDA' });
+      }
+      const borrados = await eliminarTodo(p, u.id);
+      olvidarUsuario(u.id);
+      console.warn(`🗂️ [DATOS] Admin ${req.user.id} ELIMINÓ todos los datos del trabajador ${u.codigo_empleado}:`, JSON.stringify(borrados));
+      emitStaff('user_removed', { id: u.id });
+      return res.json({ exito: true, eliminado: true, borrados });
+    }
+    await darDeBaja(p, u.id);
+    olvidarUsuario(u.id);
+    console.log(`🗂️ [DATOS] Admin ${req.user.id} dio de baja al trabajador ${u.codigo_empleado} (rostro borrado).`);
+    res.json({ exito: true, eliminado: false });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.post('/api/users/:id/reactivar', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    const u = await trabajadorParaGestion(req, res);
+    if (!u) return;
+    const p = await getPool();
+    await p.request().input('id', sql.Int, u.id).query('UPDATE Usuarios SET activo = 1 WHERE id = @id');
+    olvidarUsuario(u.id);
+    console.log(`🗂️ [DATOS] Admin ${req.user.id} reactivó al trabajador ${u.codigo_empleado}.`);
+    res.json({ exito: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Copia de todos los datos del trabajador (derecho de acceso). ?fotos=1 incluye las fotos (el archivo puede pesar mucho)
+app.get('/api/users/:id/export', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    const u = await trabajadorParaGestion(req, res);
+    if (!u) return;
+    const datos = await exportarDatos(await getPool(), u.id, { fotos: req.query.fotos === '1' });
+    console.log(`🗂️ [DATOS] Admin ${req.user.id} descargó los datos del trabajador ${u.codigo_empleado}${req.query.fotos === '1' ? ' (con fotos)' : ''}.`);
+    const nombre = `datos-${String(u.codigo_empleado).replace(/[^\w-]/g, '_')}.json`;
+    res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
+    res.type('application/json').send(JSON.stringify(datos, null, 2));
   } catch (err) {
     fail(res, err);
   }
@@ -2412,6 +2652,25 @@ if (retencionDias > 0) {
   setInterval(purgarHistorialUbicaciones, 24 * 60 * 60 * 1000).unref();
 }
 
+// Retención de fotos y registros (RETENCION_FOTOS_DIAS / RETENCION_REGISTROS_DIAS), una vez al día
+async function purgarDatosVencidos() {
+  try {
+    const p = await getPool();
+    const r = await purgarVencidos(p, { fotosDias: config.retencionFotosDias, registrosDias: config.retencionRegistrosDias });
+    const total = Object.values(r).reduce((a, b) => a + b, 0);
+    if (total) console.log(`🧹 Retención de datos personales: ${JSON.stringify(r)}`);
+  } catch (err) {
+    console.error('Error en la retención de fotos y registros:', err.message);
+  }
+}
+for (const [nombre, dias] of [['RETENCION_FOTOS_DIAS', config.retencionFotosDias], ['RETENCION_REGISTROS_DIAS', config.retencionRegistrosDias]]) {
+  if (dias > 0 && dias < MINIMO_DIAS) console.warn(`⚠️ ${nombre} debe ser al menos ${MINIMO_DIAS} días; esa retención queda desactivada.`);
+}
+if (config.retencionFotosDias >= MINIMO_DIAS || config.retencionRegistrosDias >= MINIMO_DIAS) {
+  setTimeout(purgarDatosVencidos, 3 * 60 * 1000).unref();
+  setInterval(purgarDatosVencidos, 24 * 60 * 60 * 1000).unref();
+}
+
 server.listen(config.port, '0.0.0.0', () => {
   console.log(`🚀 Servidor SMI Asistencia & GPS corriendo en ${useTls ? 'https' : 'http'}://0.0.0.0:${config.port} (${isProduction ? 'producción' : 'desarrollo'})`);
   if (isProduction && !useTls && !config.trustProxy) {
@@ -2423,4 +2682,5 @@ server.listen(config.port, '0.0.0.0', () => {
   checkBateriaColumnas();
   checkAlmuerzoTabla();
   checkCalendarioTablas();
+  checkPrivacidadTabla();
 });

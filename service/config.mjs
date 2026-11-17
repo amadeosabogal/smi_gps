@@ -63,6 +63,23 @@ export const config = {
   almuerzosPorTurno: Number(env.ALMUERZOS_POR_TURNO || 1),
   // Zona horaria con la que se decide qué día es "hoy" para el calendario de días no laborables
   zonaHoraria: env.BUSINESS_TZ || 'America/Lima',
+  // Plazos de conservación de datos personales (días; vacío = no borrar nunca; mínimo 30). Ver service/retencion.mjs
+  retencionFotosDias: Number(env.RETENCION_FOTOS_DIAS || 0),
+  retencionRegistrosDias: Number(env.RETENCION_REGISTROS_DIAS || 0),
+  // Aviso de privacidad dentro de la app: datos de la empresa que se muestran al trabajador y si la aceptación es obligatoria.
+  // Si se sube PRIVACIDAD_VERSION, todos deben volver a aceptar.
+  exigirAceptacionPrivacidad: env.EXIGIR_ACEPTACION_PRIVACIDAD === 'true',
+  privacidadVersion: Number(env.PRIVACIDAD_VERSION || 1),
+  empresa: {
+    nombre: env.EMPRESA_NOMBRE || '',
+    ruc: env.EMPRESA_RUC || '',
+    domicilio: env.EMPRESA_DOMICILIO || '',
+    correoDatos: env.EMPRESA_CORREO_DATOS || '',
+    proveedor: env.EMPRESA_PROVEEDOR || '',
+    paisServidor: env.EMPRESA_PAIS_SERVIDOR || '',
+    alternativa: env.EMPRESA_ALTERNATIVA_SIN_AUTORIZACION || '',
+    diasRostroTrasCese: Number(env.EMPRESA_DIAS_ROSTRO_TRAS_CESE || 30),
+  },
   sessionHours: Number(env.SESSION_HOURS || 12),
   adminSessionHours: Number(env.ADMIN_SESSION_HOURS || 8),
   // TLS opcional directo en Node (si no se usa un proxy inverso como nginx/Caddy)

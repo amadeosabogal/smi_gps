@@ -10,6 +10,7 @@ import type {
   TipoVerificacion,
   CalendarioRespuesta,
   EstadoDiaHoy,
+  InfoPrivacidad,
 } from '../types';
 
 // URL base del API:
@@ -291,6 +292,56 @@ export const api = {
 
   async quitarAutorizadoDia(fecha: string, usuarioId: number): Promise<void> {
     await request(`/calendar/dias/${fecha}/autorizados/${usuarioId}`, { method: 'DELETE' });
+  },
+
+  // ----- Gestión de datos del personal -----
+  async updateUser(id: number, datos: { nombre?: string; cargo?: string; correo?: string; telefono?: string }): Promise<void> {
+    await request(`/users/${id}`, { method: 'PUT', body: JSON.stringify(datos) });
+  },
+
+  async resetUserPin(id: number): Promise<{ pinNuevo: string }> {
+    return request(`/users/${id}/reset-pin`, { method: 'POST' });
+  },
+
+  /** Baja: desactiva y borra el rostro. Con eliminarDatos borra TODO (irreversible); `confirmar` = código de empleado. */
+  async bajaUser(id: number, opts: { eliminarDatos?: boolean; confirmar?: string } = {}): Promise<{ eliminado: boolean }> {
+    return request(`/users/${id}/baja`, { method: 'POST', body: JSON.stringify(opts) });
+  },
+
+  async reactivarUser(id: number): Promise<void> {
+    await request(`/users/${id}/reactivar`, { method: 'POST' });
+  },
+
+  /** Descarga un archivo JSON con todos los datos del trabajador (derecho de acceso) */
+  async downloadUserData(id: number, conFotos: boolean): Promise<void> {
+    const token = auth.getToken();
+    const res = await fetch(`${getApiBase()}/users/${id}/export${conFotos ? '?fotos=1' : ''}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let msg = `Error del servidor (${res.status})`;
+      try { msg = (await res.json()).error || msg; } catch { /* sin cuerpo */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const m = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
+    a.href = url;
+    a.download = m ? m[1] : `datos-${id}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  },
+
+  // ----- Aviso de privacidad -----
+  async getPrivacyInfo(): Promise<InfoPrivacidad> {
+    return request('/privacy/info');
+  },
+
+  async acceptPrivacy(): Promise<void> {
+    await request('/privacy/aceptar', { method: 'POST', body: JSON.stringify({ rostro: true, ubicacion: true, datos: true }) });
   },
 
   /** Elimina (da de baja) una estación. El historial conserva su nombre. */

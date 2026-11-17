@@ -14,8 +14,8 @@ android {
         applicationId "pe.smi.gpstracker"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 5
-        versionName "1.0.4"
+        versionCode 6
+        versionName "1.0.5"
         // La compilación de depuración permite HTTP (servidor local de pruebas); la de producción exige HTTPS
         manifestPlaceholders = [usesCleartext: "false"]
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"

@@ -9,6 +9,7 @@ export interface Usuario {
   activo: boolean;
   foto_ref_bytes?: number; // tamaño de la foto de referencia (0 = sin foto); la imagen se pide aparte
   facial_enrolado?: boolean;
+  privacidad_aceptada_en?: string | null; // cuándo aceptó la versión vigente del aviso de privacidad (null = pendiente)
 }
 
 export interface EstacionTrabajo {
@@ -188,4 +189,22 @@ export interface EstadoDiaHoy {
   fecha: string;
   laborable: boolean;
   motivo: string | null;
+}
+
+// ----- Aviso de privacidad -----
+export interface InfoPrivacidad {
+  version: number;
+  exigida: boolean;
+  aceptada: boolean;
+  empresa: {
+    nombre: string;
+    ruc: string;
+    domicilio: string;
+    correoDatos: string;
+    proveedor: string;
+    paisServidor: string;
+    alternativa: string;
+    diasRostroTrasCese: number;
+  };
+  plazos: { gpsDias: number; fotosDias: number; registrosDias: number };
 }
