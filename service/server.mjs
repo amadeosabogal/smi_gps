@@ -22,6 +22,7 @@ import {
   similarityFromDistance,
   parseDescriptor,
 } from './auth.mjs';
+import { nombreFeriado } from './feriados-peru.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -301,6 +302,149 @@ const appNativaActiva = (usuarioId, ventanaMs = 120_000) => Date.now() - (appNat
 const emitStaff = (event, payload) => io.to('staff').emit(event, payload);
 
 // ---------------------------------------------------------------------------
+// Calendario laboral: días no laborables
+//   Orden de decisión para una fecha: 1) lo que el administrador fijó para ese día · 2) días libres fijos de la
+//   semana (p. ej. domingos) · 3) feriados de Perú precargados · 4) día laborable.
+//   En un día no laborable la app se bloquea para los trabajadores, salvo los autorizados ese día y quien ya tiene un
+//   turno activo (para que pueda terminarlo). Los intentos se rechazan y quedan en Alertas de fraude.
+// ---------------------------------------------------------------------------
+let calendarioTablas = false;
+async function checkCalendarioTablas() {
+  try {
+    const p = await getPool();
+    const r = await p.request().query(
+      "SELECT OBJECT_ID('CalendarioDias', 'U') AS a, OBJECT_ID('CalendarioExcepciones', 'U') AS b, OBJECT_ID('CalendarioConfig', 'U') AS c"
+    );
+    const f = r.recordset[0];
+    calendarioTablas = Boolean(f.a && f.b && f.c);
+    if (!calendarioTablas) console.warn('⚠️ El calendario de días no laborables no está activo: ejecuta  npm run migrate-calendario  y reinicia.');
+  } catch (err) {
+    console.warn('No se pudo comprobar las tablas del calendario:', err.message);
+  }
+}
+
+const NOMBRES_DIA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+// Fecha civil 'YYYY-MM-DD' en la zona horaria del negocio (no la de la VPS)
+const fechaNegocio = (d = new Date()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: config.zonaHoraria, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+const fechaValida = (f) => {
+  if (typeof f !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(f)) return false;
+  const d = new Date(`${f}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === f;
+};
+const sumarDias = (f, n) => new Date(new Date(`${f}T00:00:00Z`).getTime() + n * 86_400_000).toISOString().slice(0, 10);
+const diaSemana = (f) => new Date(`${f}T00:00:00Z`).getUTCDay();
+
+// Decisión pura para una fecha, dados lo fijado por el administrador (o null) y los días libres de la semana
+function estadoSegun(fecha, override, diasLibres) {
+  const feriado = nombreFeriado(fecha);
+  const dow = diaSemana(fecha);
+  if (override) {
+    return { fecha, laborable: override.laborable, origen: 'admin', motivo: override.motivo || feriado || (diasLibres.has(dow) ? `Día libre (${NOMBRES_DIA[dow]})` : null), feriado };
+  }
+  if (diasLibres.has(dow)) {
+    const libre = `día libre (${NOMBRES_DIA[dow]})`;
+    return { fecha, laborable: false, origen: 'semanal', motivo: feriado ? `${feriado} · ${libre}` : `${libre.charAt(0).toUpperCase()}${libre.slice(1)}`, feriado };
+  }
+  if (feriado) return { fecha, laborable: false, origen: 'feriado', motivo: feriado, feriado };
+  return { fecha, laborable: true, origen: 'normal', motivo: null, feriado: null };
+}
+
+// Caché corta: estas consultas se repiten en cada petición de un trabajador
+const CAL_TTL_MS = 30_000;
+const calCache = { libres: null, dias: new Map(), aut: new Map() };
+const invalidarCalendario = () => { calCache.libres = null; calCache.dias.clear(); calCache.aut.clear(); };
+async function cacheado(mapa, clave, cargar, vacio) {
+  const c = mapa.get(clave);
+  if (c && Date.now() - c.t < CAL_TTL_MS) return c.v;
+  try {
+    const v = await cargar();
+    mapa.set(clave, { t: Date.now(), v });
+    return v;
+  } catch (err) {
+    console.error('Calendario: no se pudo consultar la base de datos:', err.message);
+    return c ? c.v : vacio; // si falla la BD se usa lo último conocido; sin datos, no se bloquea a nadie
+  }
+}
+const parseDiasLibres = (txt) => new Set(String(txt || '').split(',').map((s) => s.trim()).filter((s) => /^[0-6]$/.test(s)).map(Number));
+async function diasLibresSemana() {
+  const c = calCache.libres;
+  if (c && Date.now() - c.t < CAL_TTL_MS) return c.v;
+  try {
+    const p = await getPool();
+    const r = await p.request().query("SELECT valor FROM CalendarioConfig WHERE clave = 'dias_libres'");
+    const v = parseDiasLibres(r.recordset[0]?.valor);
+    calCache.libres = { t: Date.now(), v };
+    return v;
+  } catch (err) {
+    console.error('Calendario: no se pudieron leer los días libres:', err.message);
+    return c ? c.v : new Set();
+  }
+}
+const overrideDe = (fecha) => cacheado(calCache.dias, fecha, async () => {
+  const p = await getPool();
+  const r = await p.request().input('f', sql.VarChar(10), fecha).query('SELECT laborable, motivo FROM CalendarioDias WHERE fecha = @f');
+  const f = r.recordset[0];
+  return f ? { laborable: Boolean(f.laborable), motivo: f.motivo || null } : null;
+}, null);
+const autorizadosDe = (fecha) => cacheado(calCache.aut, fecha, async () => {
+  const p = await getPool();
+  const r = await p.request().input('f', sql.VarChar(10), fecha).query('SELECT usuario_id FROM CalendarioExcepciones WHERE fecha = @f');
+  return new Set(r.recordset.map((x) => x.usuario_id));
+}, new Set());
+
+async function estadoDelDia(fecha) {
+  if (!calendarioTablas) return { fecha, laborable: true, origen: 'normal', motivo: null, feriado: null };
+  return estadoSegun(fecha, await overrideDe(fecha), await diasLibresSemana());
+}
+
+// ¿Puede este trabajador usar la app hoy? (el turno activo se revisa aparte)
+async function permisoHoy(usuarioId) {
+  const fecha = fechaNegocio();
+  const estado = await estadoDelDia(fecha);
+  if (estado.laborable) return { permitido: true, estado };
+  if ((await autorizadosDe(fecha)).has(usuarioId)) return { permitido: true, autorizado: true, estado };
+  return { permitido: false, estado };
+}
+
+function mensajeDiaNoLaborable(estado) {
+  const motivo = estado.motivo ? ` (${estado.motivo})` : '';
+  return `Hoy ${estado.fecha.split('-').reverse().join('/')} es un día no laborable${motivo}. La aplicación está bloqueada. Si debe trabajar hoy, pida al administrador que lo autorice.`;
+}
+
+// Bloqueo para un trabajador: null si puede continuar. Quien ya tiene un turno activo puede terminarlo.
+async function bloqueoDiaNoLaborable(usuarioId, via) {
+  if (!calendarioTablas) return null;
+  const permiso = await permisoHoy(usuarioId);
+  if (permiso.permitido) return null;
+  const turno = await turnoActivoDe(await getPool(), usuarioId);
+  if (turno) return null;
+  anotarIntentoDiaNoLaborable(usuarioId, permiso.estado, via);
+  return {
+    error: mensajeDiaNoLaborable(permiso.estado),
+    codigo: 'DIA_NO_LABORABLE',
+    fecha: permiso.estado.fecha,
+    motivo: permiso.estado.motivo,
+  };
+}
+
+// Queda anotado (Alertas de fraude), una vez cada 10 minutos por trabajador para no llenar la auditoría
+const ultimoIntentoDia = new Map();
+function anotarIntentoDiaNoLaborable(usuarioId, estado, via) {
+  const clave = `${usuarioId}|${estado.fecha}`;
+  if (Date.now() - (ultimoIntentoDia.get(clave) || 0) < 10 * 60 * 1000) return;
+  ultimoIntentoDia.set(clave, Date.now());
+  if (ultimoIntentoDia.size > 5000) ultimoIntentoDia.clear();
+  registrarFraude({
+    usuarioId,
+    tipoEvento: 'INTENTO_DIA_NO_LABORABLE',
+    foto: null,
+    similitud: 0,
+    notas: `Intentó usar la app en día no laborable (${estado.fecha}${estado.motivo ? ` · ${estado.motivo}` : ''}) · ${via}`.slice(0, 255),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Autenticación
 // ---------------------------------------------------------------------------
 const loginIpLimiter = createLimiter({ max: config.loginIpMax, windowMs: 10 * 60 * 1000 });
@@ -308,7 +452,9 @@ const loginUserLimiter = createLimiter({ max: 8, windowMs: 15 * 60 * 1000 });
 const faceFailLimiter = createLimiter({ max: 5, windowMs: 10 * 60 * 1000 });
 
 function requireAuth(roles) {
-  return (req, res, next) => {
+  // Las rutas de trabajador (roles = ROLES_WORKER) también se bloquean en un día no laborable
+  const esRutaDeTrabajador = Boolean(roles && roles.includes('trabajador'));
+  return async (req, res, next) => {
     const header = req.headers.authorization || '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : null;
     const payload = verifyToken(token, jwtSecret);
@@ -319,6 +465,14 @@ function requireAuth(roles) {
       return res.status(403).json({ error: 'No tienes permiso para esta acción.' });
     }
     req.user = { id: payload.sub, rol: payload.rol };
+    if (esRutaDeTrabajador && calendarioTablas) {
+      try {
+        const bloqueo = await bloqueoDiaNoLaborable(payload.sub, 'sesión abierta');
+        if (bloqueo) return res.status(403).json(bloqueo);
+      } catch (err) {
+        console.error('Calendario: no se pudo comprobar el día (se deja pasar):', err.message);
+      }
+    }
     next();
   };
 }
@@ -369,7 +523,7 @@ const publicUser = (u) => ({
 // Falsa verificación para igualar tiempos cuando el usuario no existe
 const DUMMY_HASH = hashPin('no-existe');
 
-async function doLogin(req, res, { findUser, allowedRoles, ttlHours, secretValue, label }) {
+async function doLogin(req, res, { findUser, allowedRoles, ttlHours, secretValue, label, bloqueo }) {
   const ipKey = `ip:${req.ip}`;
   const blocked = loginIpLimiter.blockedFor(ipKey);
   if (blocked) {
@@ -396,6 +550,12 @@ async function doLogin(req, res, { findUser, allowedRoles, ttlHours, secretValue
 
   loginIpLimiter.reset(ipKey);
   loginUserLimiter.reset(userKey);
+  if (bloqueo) {
+    // PIN correcto, pero hoy no se puede entrar (día no laborable). Se rechaza y queda anotado.
+    let motivoBloqueo = null;
+    try { motivoBloqueo = await bloqueo(user); } catch (err) { console.error('Calendario: no se pudo comprobar el día (se deja pasar):', err.message); }
+    if (motivoBloqueo) return res.status(403).json(motivoBloqueo);
+  }
   const token = signToken({ typ: 'session', sub: user.id, rol: user.rol }, ttlHours * 3600, jwtSecret);
   return res.json({ token, user: publicUser(user) });
 }
@@ -457,6 +617,7 @@ app.post('/api/auth/login', async (req, res) => {
       secretValue: typeof pin === 'string' ? pin : String(pin ?? ''),
       allowedRoles: ROLES_WORKER,
       ttlHours: config.sessionHours,
+      bloqueo: (user) => bloqueoDiaNoLaborable(user.id, 'inicio de sesión'),
       findUser: async () => {
         if (!Number.isInteger(id)) return null;
         const p = await getPool();
@@ -484,6 +645,166 @@ app.post('/api/auth/admin-login', async (req, res) => {
         return r.recordset[0] || null;
       },
     });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ----------------- CALENDARIO DE DÍAS NO LABORABLES -----------------
+
+// Público: la pantalla de ingreso avisa si hoy la app está bloqueada (no revela nada sensible)
+app.get('/api/calendar/hoy', async (req, res) => {
+  try {
+    const estado = await estadoDelDia(fechaNegocio());
+    res.json({ fecha: estado.fecha, laborable: estado.laborable, motivo: estado.laborable ? null : estado.motivo });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Panel: calendario de un rango de fechas (máx. 400 días) con lo que decidió el administrador y los autorizados
+app.get('/api/calendar', requireAuth(ROLES_STAFF), async (req, res) => {
+  try {
+    const hoy = fechaNegocio();
+    const desde = fechaValida(req.query.desde) ? req.query.desde : `${hoy.slice(0, 8)}01`;
+    const hasta = fechaValida(req.query.hasta) ? req.query.hasta : sumarDias(desde, 90);
+    const dias = Math.round((new Date(`${hasta}T00:00:00Z`) - new Date(`${desde}T00:00:00Z`)) / 86_400_000) + 1;
+    if (dias < 1 || dias > 400) return res.status(400).json({ error: 'El rango debe ser de 1 a 400 días.' });
+    if (!calendarioTablas) {
+      return res.status(503).json({ error: 'El calendario aún no está activo en el servidor: ejecute  npm run migrate-calendario  y reinicie.', codigo: 'CALENDARIO_NO_DISPONIBLE' });
+    }
+    const p = await getPool();
+    const [ovR, autR, cfgR] = await Promise.all([
+      p.request().input('d', sql.VarChar(10), desde).input('h', sql.VarChar(10), hasta)
+        .query("SELECT CONVERT(VARCHAR(10), fecha, 23) AS fecha, laborable, motivo FROM CalendarioDias WHERE fecha BETWEEN @d AND @h"),
+      p.request().input('d', sql.VarChar(10), desde).input('h', sql.VarChar(10), hasta).query(`
+        SELECT CONVERT(VARCHAR(10), e.fecha, 23) AS fecha, e.usuario_id, e.motivo, u.nombre, u.codigo_empleado
+        FROM CalendarioExcepciones e JOIN Usuarios u ON u.id = e.usuario_id
+        WHERE e.fecha BETWEEN @d AND @h ORDER BY u.nombre`),
+      p.request().query("SELECT valor FROM CalendarioConfig WHERE clave = 'dias_libres'"),
+    ]);
+    const libres = parseDiasLibres(cfgR.recordset[0]?.valor);
+    const overrides = new Map(ovR.recordset.map((o) => [o.fecha, { laborable: Boolean(o.laborable), motivo: o.motivo || null }]));
+    const autorizados = new Map();
+    for (const a of autR.recordset) {
+      if (!autorizados.has(a.fecha)) autorizados.set(a.fecha, []);
+      autorizados.get(a.fecha).push({ usuarioId: a.usuario_id, nombre: a.nombre, codigo: a.codigo_empleado, motivo: a.motivo || null });
+    }
+    const lista = [];
+    for (let i = 0; i < dias; i++) {
+      const fecha = sumarDias(desde, i);
+      const ov = overrides.get(fecha) || null;
+      const e = estadoSegun(fecha, ov, libres);
+      lista.push({
+        fecha,
+        laborable: e.laborable,
+        origen: e.origen,           // 'admin' | 'semanal' | 'feriado' | 'normal'
+        motivo: e.motivo,
+        feriado: e.feriado,         // nombre del feriado sugerido, si lo hay
+        decision: ov ? ov.laborable : null, // lo fijado por el administrador (null = nada fijado)
+        autorizados: autorizados.get(fecha) || [],
+      });
+    }
+    res.json({ hoy, zonaHoraria: config.zonaHoraria, diasLibres: [...libres].sort(), dias: lista });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+function calendarioListo(res) {
+  if (calendarioTablas) return true;
+  res.status(503).json({ error: 'El calendario aún no está activo en el servidor: ejecute  npm run migrate-calendario  y reinicie.', codigo: 'CALENDARIO_NO_DISPONIBLE' });
+  return false;
+}
+const motivoLimpio = (m) => (typeof m === 'string' && m.trim() ? m.trim().slice(0, 120) : null);
+
+// Fija lo que pasa en una fecha: laborable=true habilita la app, false la bloquea, null quita la decisión
+app.put('/api/calendar/dias/:fecha', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    if (!calendarioListo(res)) return;
+    const { fecha } = req.params;
+    if (!fechaValida(fecha)) return res.status(400).json({ error: 'Fecha inválida (use AAAA-MM-DD).' });
+    if (fecha < fechaNegocio()) return res.status(400).json({ error: 'No se puede cambiar un día que ya pasó.' });
+    const { laborable } = req.body || {};
+    if (laborable !== true && laborable !== false && laborable !== null) return res.status(400).json({ error: 'Indique laborable: true, false o null.' });
+    const p = await getPool();
+    if (laborable === null) {
+      await p.request().input('f', sql.VarChar(10), fecha).query('DELETE FROM CalendarioDias WHERE fecha = @f');
+    } else {
+      await p.request()
+        .input('f', sql.VarChar(10), fecha).input('l', sql.Bit, laborable ? 1 : 0)
+        .input('m', sql.NVarChar(120), motivoLimpio(req.body.motivo)).input('by', sql.Int, req.user.id)
+        .query(`
+          UPDATE CalendarioDias SET laborable = @l, motivo = @m, creado_por = @by, creado_en = GETDATE() WHERE fecha = @f;
+          IF @@ROWCOUNT = 0 INSERT INTO CalendarioDias (fecha, laborable, motivo, creado_por) VALUES (@f, @l, @m, @by);
+        `);
+    }
+    invalidarCalendario();
+    console.log(`📅 Admin ${req.user.id} fijó ${fecha}: ${laborable === null ? 'sin decisión (vuelve a la regla)' : laborable ? 'app HABILITADA' : 'app BLOQUEADA'}`);
+    res.json({ exito: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Días libres fijos de la semana (0 = domingo … 6 = sábado)
+app.put('/api/calendar/config', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    if (!calendarioListo(res)) return;
+    const { diasLibres } = req.body || {};
+    if (!Array.isArray(diasLibres) || !diasLibres.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) {
+      return res.status(400).json({ error: 'diasLibres debe ser una lista de números del 0 (domingo) al 6 (sábado).' });
+    }
+    const valor = [...new Set(diasLibres)].sort().join(',');
+    const p = await getPool();
+    await p.request().input('v', sql.NVarChar(200), valor).query(`
+      UPDATE CalendarioConfig SET valor = @v WHERE clave = 'dias_libres';
+      IF @@ROWCOUNT = 0 INSERT INTO CalendarioConfig (clave, valor) VALUES ('dias_libres', @v);
+    `);
+    invalidarCalendario();
+    console.log(`📅 Admin ${req.user.id} fijó los días libres semanales: [${valor}]`);
+    res.json({ exito: true, diasLibres: valor ? valor.split(',').map(Number) : [] });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Autoriza a un trabajador a usar la app en una fecha no laborable
+app.post('/api/calendar/dias/:fecha/autorizados', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    if (!calendarioListo(res)) return;
+    const { fecha } = req.params;
+    const usuarioId = Number.parseInt(req.body?.usuarioId, 10);
+    if (!fechaValida(fecha) || !Number.isInteger(usuarioId)) return res.status(400).json({ error: 'Solicitud inválida' });
+    if (fecha < fechaNegocio()) return res.status(400).json({ error: 'No se puede autorizar un día que ya pasó.' });
+    const p = await getPool();
+    const u = await p.request().input('id', sql.Int, usuarioId).query("SELECT id FROM Usuarios WHERE id = @id AND rol = 'trabajador' AND activo = 1");
+    if (!u.recordset.length) return res.status(404).json({ error: 'Trabajador no encontrado' });
+    await p.request()
+      .input('f', sql.VarChar(10), fecha).input('u', sql.Int, usuarioId)
+      .input('m', sql.NVarChar(120), motivoLimpio(req.body.motivo)).input('by', sql.Int, req.user.id)
+      .query(`
+        IF NOT EXISTS (SELECT 1 FROM CalendarioExcepciones WHERE fecha = @f AND usuario_id = @u)
+          INSERT INTO CalendarioExcepciones (fecha, usuario_id, motivo, creado_por) VALUES (@f, @u, @m, @by);
+      `);
+    invalidarCalendario();
+    console.log(`📅 Admin ${req.user.id} autorizó al trabajador ${usuarioId} el ${fecha}`);
+    res.json({ exito: true });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.delete('/api/calendar/dias/:fecha/autorizados/:usuarioId', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    if (!calendarioListo(res)) return;
+    const usuarioId = Number.parseInt(req.params.usuarioId, 10);
+    if (!fechaValida(req.params.fecha) || !Number.isInteger(usuarioId)) return res.status(400).json({ error: 'Solicitud inválida' });
+    const p = await getPool();
+    await p.request().input('f', sql.VarChar(10), req.params.fecha).input('u', sql.Int, usuarioId)
+      .query('DELETE FROM CalendarioExcepciones WHERE fecha = @f AND usuario_id = @u');
+    invalidarCalendario();
+    res.json({ exito: true });
   } catch (err) {
     fail(res, err);
   }
@@ -2101,4 +2422,5 @@ server.listen(config.port, '0.0.0.0', () => {
   checkDispositivoColumna();
   checkBateriaColumnas();
   checkAlmuerzoTabla();
+  checkCalendarioTablas();
 });

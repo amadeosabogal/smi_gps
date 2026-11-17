@@ -158,3 +158,34 @@ export interface RecorridoTurno {
 
 // Qué se está verificando con el rostro (cada uno tiene su propio ticket de un solo uso en el servidor)
 export type TipoVerificacion = 'entrada' | 'salida' | 'almuerzo_inicio' | 'almuerzo_fin';
+
+// ----- Calendario de días no laborables -----
+export interface AutorizadoDia {
+  usuarioId: number;
+  nombre: string;
+  codigo: string;
+  motivo: string | null;
+}
+
+export interface DiaCalendario {
+  fecha: string; // AAAA-MM-DD
+  laborable: boolean;
+  origen: 'admin' | 'semanal' | 'feriado' | 'normal';
+  motivo: string | null;
+  feriado: string | null;
+  decision: boolean | null; // lo fijado por el administrador (null = nada)
+  autorizados: AutorizadoDia[];
+}
+
+export interface CalendarioRespuesta {
+  hoy: string;
+  zonaHoraria: string;
+  diasLibres: number[];
+  dias: DiaCalendario[];
+}
+
+export interface EstadoDiaHoy {
+  fecha: string;
+  laborable: boolean;
+  motivo: string | null;
+}

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api, auth } from '../services/api';
 import { socket, connectSocket, disconnectSocket } from '../services/socket';
 import { geolocationService, type CoordsData } from '../services/geolocation';
-import type { Usuario, EstacionTrabajo, TipoVerificacion } from '../types';
+import type { Usuario, EstacionTrabajo, TipoVerificacion, EstadoDiaHoy } from '../types';
 import { ShieldCheck, AlertTriangle, Compass, RefreshCw, ScanFace } from 'lucide-react';
 import { BiometricVerificationModal } from '../components/BiometricVerificationModal';
 import { faceRecognitionService } from '../services/faceRecognition';
@@ -13,6 +13,7 @@ import { BrandLogo } from '../components/BrandLogo';
 import { syncPush, releasePush } from '../services/push';
 import { esAppNativa, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
 import { NativePermissionsModal } from '../components/NativePermissionsModal';
+import { DiaNoLaborable } from '../components/DiaNoLaborable';
 
 export const WorkerPage: React.FC = () => {
   const [workers, setWorkers] = useState<Usuario[]>([]);
@@ -73,6 +74,10 @@ export const WorkerPage: React.FC = () => {
   // Si no hay conexión con el servidor al abrir la app (por ejemplo, justo después de reiniciar el celular) se reintenta solo
   const [cargaError, setCargaError] = useState<string | null>(null);
   const [intentosCarga, setIntentosCarga] = useState<number>(0);
+  // Día no laborable: la app se bloquea (salvo autorización del administrador o turno ya activo)
+  const [diaBloqueado, setDiaBloqueado] = useState<{ fecha: string | null; motivo: string | null } | null>(null);
+  const [comprobandoDia, setComprobandoDia] = useState<boolean>(false);
+  const [hoyCalendario, setHoyCalendario] = useState<EstadoDiaHoy | null>(null);
 
   // Carga inicial: lista pública de nombres para el ingreso y, si hay sesión, el perfil y las estaciones
   const loadData = useCallback(async () => {
@@ -158,6 +163,7 @@ export const WorkerPage: React.FC = () => {
     if (!selectedUser) return;
     try {
       const workerInfo = await api.getMyShift();
+      setDiaBloqueado(null);
 
       if (workerInfo && workerInfo.estado_asistencia === 'activo') {
         setIsActiveShift(true);
@@ -216,10 +222,33 @@ export const WorkerPage: React.FC = () => {
         geolocationService.stopTracking();
         if (esAppNativa) nativeTracker.detener();
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.data?.codigo === 'DIA_NO_LABORABLE') {
+        setDiaBloqueado({ fecha: err.data.fecha || null, motivo: err.data.motivo || null });
+        geolocationService.stopTracking();
+        if (esAppNativa) nativeTracker.detener();
+        return;
+      }
       console.error('Error verificando turno activo:', err);
     }
   }, [selectedUser, workstations]);
+
+  // Pantalla de ingreso: avisa si hoy la app está bloqueada
+  useEffect(() => {
+    if (isAuthenticated) return;
+    let vivo = true;
+    api.getCalendarioHoy().then((h) => vivo && setHoyCalendario(h)).catch(() => {});
+    return () => {
+      vivo = false;
+    };
+  }, [isAuthenticated]);
+
+  // Con la sesión abierta y el día bloqueado, se vuelve a comprobar cada minuto (por si el administrador lo autoriza)
+  useEffect(() => {
+    if (!diaBloqueado || !isAuthenticated) return;
+    const t = setInterval(() => checkShiftStatus(), 60_000);
+    return () => clearInterval(t);
+  }, [diaBloqueado, isAuthenticated, checkShiftStatus]);
 
   useEffect(() => {
     if (isAuthenticated) checkShiftStatus();
@@ -365,7 +394,11 @@ export const WorkerPage: React.FC = () => {
       connectSocket();
     } catch (err: any) {
       setPinInput('');
-      alert(err.message || 'No se pudo iniciar sesión');
+      if (err?.data?.codigo === 'DIA_NO_LABORABLE') {
+        setDiaBloqueado({ fecha: err.data.fecha || null, motivo: err.data.motivo || null });
+      } else {
+        alert(err.message || 'No se pudo iniciar sesión');
+      }
     } finally {
       setLoginLoading(false);
     }
@@ -821,6 +854,30 @@ export const WorkerPage: React.FC = () => {
     );
   }
 
+  // Día no laborable y sin autorización: toda la app queda bloqueada
+  if (diaBloqueado) {
+    return (
+      <DiaNoLaborable
+        fecha={diaBloqueado.fecha}
+        motivo={diaBloqueado.motivo}
+        conSesion={isAuthenticated}
+        comprobando={comprobandoDia}
+        onComprobar={async () => {
+          setComprobandoDia(true);
+          try {
+            await checkShiftStatus();
+          } finally {
+            setComprobandoDia(false);
+          }
+        }}
+        onSalir={() => {
+          if (isAuthenticated) handleLogout();
+          else setDiaBloqueado(null);
+        }}
+      />
+    );
+  }
+
   // Pantalla de ingreso
   if (!isAuthenticated) {
     return (
@@ -830,6 +887,12 @@ export const WorkerPage: React.FC = () => {
         panelTitulo="Control de asistencia y geolocalización"
         panelTexto="Registre su entrada y salida con reconocimiento facial y ubicación verificada en su estación de trabajo."
       >
+        {hoyCalendario && !hoyCalendario.laborable && (
+          <div role="status" className="mb-5 border border-amber-300 border-l-4 border-l-amber-600 bg-amber-50 p-3 text-sm text-amber-900">
+            <p className="font-semibold">Hoy es un día no laborable{hoyCalendario.motivo ? `: ${hoyCalendario.motivo}` : ''}</p>
+            <p className="mt-0.5">La aplicación está bloqueada, salvo que el administrador lo haya autorizado.</p>
+          </div>
+        )}
         <form onSubmit={handleLogin} className="space-y-5">
           <div>
             <label htmlFor="trabajador" className="field-label">

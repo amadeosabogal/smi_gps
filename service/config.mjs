@@ -61,6 +61,8 @@ export const config = {
   // Almuerzo dentro del turno: minutos permitidos (el panel marca en rojo al que se pasa) y cuántos por turno
   almuerzoMinutos: Number(env.ALMUERZO_MINUTOS || 60),
   almuerzosPorTurno: Number(env.ALMUERZOS_POR_TURNO || 1),
+  // Zona horaria con la que se decide qué día es "hoy" para el calendario de días no laborables
+  zonaHoraria: env.BUSINESS_TZ || 'America/Lima',
   sessionHours: Number(env.SESSION_HOURS || 12),
   adminSessionHours: Number(env.ADMIN_SESSION_HOURS || 8),
   // TLS opcional directo en Node (si no se usa un proxy inverso como nginx/Caddy)

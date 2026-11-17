@@ -22,6 +22,7 @@ Copia `service/.env.example` a `service/.env` y completa los valores. **Nunca su
 | `ALLOW_SELF_ENROL=false` | Opcional: obliga a que solo un administrador enrole rostros |
 | `LOGIN_IP_MAX` | Intentos de login **fallidos** permitidos por IP cada 10 min (60 por defecto). Toda una planta suele compartir IP, así que debe ser alto; cada cuenta se protege aparte (8 fallos / 15 min) |
 | `GPS_MAX_ACCURACY_CHECKIN_M`, `GPS_MAX_ACCURACY_PING_M` | Precisión GPS exigida en metros para marcar entrada (50) y para los puntos durante el turno (100). Una ubicación aproximada como ±2000 m se rechaza |
+| `BUSINESS_TZ` | Zona horaria que decide qué día es "hoy" para el calendario de días no laborables (`America/Lima` por defecto) |
 | `RETENCION_UBICACIONES_DIAS` | Opcional. Días que se conservan los **puntos GPS del recorrido** (mínimo 7). Vacío = no borrar nunca. No afecta a la asistencia ni a las fotos |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Claves de las **notificaciones push** (alertas al celular). Se generan con `npm run vapid`. La privada es un secreto; usa una pareja distinta en producción |
 
@@ -173,6 +174,17 @@ Durante un turno activo el trabajador toca **Iniciar almuerzo** y, al volver, **
 - **Panel:** la tarjeta del trabajador muestra "En almuerzo" (turquesa; no cuenta como "fuera de zona"), cuántos minutos lleva de los permitidos y se pone en rojo si se pasa; hay una tarjeta de resumen "En almuerzo". El historial tiene la columna "Almuerzo" (inicio–fin y minutos) y el CSV suma sus columnas. El visor de recorrido dibuja en turquesa los puntos del almuerzo y muestra las dos fotos.
 - **Reglas:** `ALMUERZO_MINUTOS=60` (tiempo permitido) y `ALMUERZOS_POR_TURNO=1` en `service/.env`. Si el trabajador marca salida (o el administrador fuerza la salida) con el almuerzo abierto, se cierra solo. Solo se puede iniciar desde el dispositivo que marcó la entrada.
 - **Puesta en marcha (una vez):** `npm run migrate-almuerzo` (crea la tabla `AlmuerzosTurno`; con `--dry-run` solo simula) y `pm2 restart smi-gps`. Sin la tabla el botón no aparece y el servidor lo avisa en el arranque.
+
+### Días no laborables / feriados (calendario)
+En un día no laborable **toda la aplicación queda bloqueada** para los trabajadores: no pueden ingresar con su PIN ni marcar asistencia. El bloqueo lo hace el **servidor** (no solo la pantalla), así que también vale para sesiones ya abiertas y para versiones viejas de la app.
+- **Qué es "no laborable":** se decide por este orden → 1) lo que el administrador fijó para esa fecha (habilitar o bloquear) · 2) los **días libres fijos de la semana** (por ejemplo, domingos) · 3) los **feriados de Perú precargados** · 4) si nada aplica, día laborable. Por defecto **no hay días libres fijos** (configúralos en la pestaña *Calendario*), pero los feriados precargados **sí bloquean** hasta que el administrador los habilite.
+- **Pestaña "Calendario" del panel (solo administrador escribe; el supervisor mira):** calendario por mes; al tocar un día se puede *Habilitar la app este día*, *Bloquear la app este día*, *Quitar mi decisión* y **autorizar a trabajadores concretos** (por trabajador y por fecha) aunque el día esté bloqueado. No se pueden cambiar días que ya pasaron.
+- **Intentos:** si un trabajador pone su PIN correcto o usa una sesión abierta en un día bloqueado, se rechaza (403 `DIA_NO_LABORABLE`) y **queda anotado en "Alertas de fraude"** como "Intento en día no laborable" (una anotación cada 10 minutos por trabajador, sin foto). En el celular ve una pantalla con el motivo; la pantalla de ingreso avisa de antemano.
+- **Quien ya tiene un turno abierto** puede seguir y terminarlo (por ejemplo, un turno nocturno que cruza la medianoche hacia un feriado); el rastreo GPS de ese turno no se corta.
+- **Zona horaria:** "hoy" se decide con `BUSINESS_TZ` (por defecto `America/Lima`), no con la hora de la VPS.
+- **Los feriados son una SUGERENCIA.** Están en `service/feriados-peru.mjs` (fijos + Jueves/Viernes Santo calculados): Año Nuevo, Día del Trabajo, 7 jun, San Pedro y San Pablo, 23 jul, Fiestas Patrias (28-29 jul), 6 ago, Santa Rosa de Lima, 8 oct, Todos los Santos, 8 y 9 dic, Navidad. **Verifícalos con el decreto oficial (El Peruano)** cada año: el Gobierno puede declarar días no laborables adicionales o mover alguno. Si falta uno, bloquéalo desde el calendario; si uno sobra o ese día se trabaja, usa *Habilitar la app*.
+- **Puesta en marcha (una vez):** `npm run migrate-calendario` (crea `CalendarioDias`, `CalendarioExcepciones` y `CalendarioConfig`; con `--dry-run` solo simula) y `pm2 restart smi-gps`. **Sin las tablas el bloqueo NO funciona** (nadie queda bloqueado) y el servidor lo avisa en el arranque.
+- **Para ver la pantalla de bloqueo en el APK** hace falta la app 1.0.4; con una versión anterior el servidor igual rechaza el ingreso y el trabajador ve el mensaje del servidor en una alerta.
 
 ### Batería del teléfono (app Android 1.0.2 o posterior)
 Con cada punto GPS la app lee el porcentaje de batería y si el teléfono está conectado al cargador (lo entrega el sistema sin permisos ni gasto extra) y lo envía junto a la ubicación. Se ve en:

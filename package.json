@@ -26,6 +26,7 @@
     "migrate-dispositivo": "node service/migrate-dispositivo.mjs",
     "migrate-bateria": "node service/migrate-bateria.mjs",
     "migrate-almuerzo": "node service/migrate-almuerzo.mjs",
+    "migrate-calendario": "node service/migrate-calendario.mjs",
     "purge-historial": "node service/purge-historial.mjs",
     "vapid": "node service/generate-vapid.mjs",
     "migrate-push": "node service/migrate-push.mjs"

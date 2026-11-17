@@ -4,6 +4,7 @@ import { socket, connectSocket, disconnectSocket } from '../services/socket';
 import { GoogleLiveMap } from '../components/GoogleLiveMap';
 import { StationPlacementPanel } from '../components/StationPlacementPanel';
 import { RouteHistoryModal } from '../components/RouteHistoryModal';
+import { CalendarioPanel } from '../components/CalendarioPanel';
 import { EnrolFaceModal } from '../components/EnrolFaceModal';
 import { AuthLayout } from '../components/AuthLayout';
 import { BrandLogo } from '../components/BrandLogo';
@@ -47,7 +48,7 @@ const LOGS_PAGE_SIZE = 50;
 
 // Nombre legible de los tipos de evento de la auditoría
 const etiquetaEvento = (tipo: string) =>
-  ({ SUPLANTACION_ROSTRO: 'Suplantación de rostro', FALLA_PRUEBA_VIDA: 'Falla en la prueba de vida' } as Record<string, string>)[tipo] ||
+  ({ SUPLANTACION_ROSTRO: 'Suplantación de rostro', FALLA_PRUEBA_VIDA: 'Falla en la prueba de vida', INTENTO_DIA_NO_LABORABLE: 'Intento en día no laborable' } as Record<string, string>)[tipo] ||
   tipo.charAt(0) + tipo.slice(1).toLowerCase().replace(/_/g, ' ');
 
 // Mensajes rápidos para las alertas al celular del trabajador
@@ -150,7 +151,7 @@ export const AdminPage: React.FC = () => {
   const [showEnrolModal, setShowEnrolModal] = useState<boolean>(false);
 
   // Tabs & filters
-  const [activeTab, setActiveTab] = useState<'map' | 'logs' | 'workers' | 'fraud' | 'stations'>('map');
+  const [activeTab, setActiveTab] = useState<'map' | 'logs' | 'workers' | 'fraud' | 'stations' | 'calendar'>('map');
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [selectedWorker, setSelectedWorker] = useState<DatosTrabajadorEnVivo | null>(null);
 
@@ -989,6 +990,7 @@ export const AdminPage: React.FC = () => {
                   { id: 'workers', label: `Personal y biometría (${workersList.length})` },
                   { id: 'fraud', label: 'Alertas de fraude', badge: fraudLogs.length },
                   { id: 'stations', label: `Estaciones (${workstations.length})` },
+                  { id: 'calendar', label: 'Calendario' },
                 ] as const
               ).map((t) => (
                 <button
@@ -1010,7 +1012,7 @@ export const AdminPage: React.FC = () => {
 
             {/* Búsqueda y acciones de la pestaña */}
             <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-              {activeTab !== 'stations' ? (
+              {activeTab !== 'stations' && activeTab !== 'calendar' ? (
               <div className="relative w-full sm:w-80">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
@@ -1866,6 +1868,12 @@ export const AdminPage: React.FC = () => {
                   </div>
                 )}
               </div>
+            )}
+
+            {activeTab === 'calendar' && (
+              <CalendarioPanel
+                trabajadores={workersList.filter((w) => w.rol === 'trabajador' && w.activo).map((w) => ({ id: w.id, nombre: w.nombre, codigo_empleado: w.codigo_empleado }))}
+              />
             )}
 
             {/* Tab 3: Workstations Config */}

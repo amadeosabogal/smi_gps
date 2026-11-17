@@ -8,6 +8,8 @@ import type {
   AuditoriaFraudeFacial,
   RecorridoTurno,
   TipoVerificacion,
+  CalendarioRespuesta,
+  EstadoDiaHoy,
 } from '../types';
 
 // URL base del API:
@@ -262,6 +264,33 @@ export const api = {
 
   async createWorkstation(data: Partial<EstacionTrabajo>): Promise<EstacionTrabajo> {
     return request('/workstations', { method: 'POST', body: JSON.stringify(data) });
+  },
+
+  // ----- Calendario de días no laborables -----
+  /** Público: ¿hoy está bloqueada la app? (la pantalla de ingreso lo avisa) */
+  async getCalendarioHoy(): Promise<EstadoDiaHoy> {
+    return request('/calendar/hoy', {}, { auth: false });
+  },
+
+  async getCalendario(desde: string, hasta: string): Promise<CalendarioRespuesta> {
+    return request(`/calendar?desde=${desde}&hasta=${hasta}`);
+  },
+
+  /** laborable: true habilita la app ese día, false la bloquea, null quita la decisión */
+  async setDiaCalendario(fecha: string, laborable: boolean | null, motivo?: string): Promise<void> {
+    await request(`/calendar/dias/${fecha}`, { method: 'PUT', body: JSON.stringify({ laborable, motivo }) });
+  },
+
+  async setDiasLibres(diasLibres: number[]): Promise<void> {
+    await request('/calendar/config', { method: 'PUT', body: JSON.stringify({ diasLibres }) });
+  },
+
+  async autorizarTrabajadorDia(fecha: string, usuarioId: number, motivo?: string): Promise<void> {
+    await request(`/calendar/dias/${fecha}/autorizados`, { method: 'POST', body: JSON.stringify({ usuarioId, motivo }) });
+  },
+
+  async quitarAutorizadoDia(fecha: string, usuarioId: number): Promise<void> {
+    await request(`/calendar/dias/${fecha}/autorizados/${usuarioId}`, { method: 'DELETE' });
   },
 
   /** Elimina (da de baja) una estación. El historial conserva su nombre. */
