@@ -205,7 +205,7 @@ export const AvisoPrivacidad: React.FC<Props> = ({ onAceptado, onRechazar }) => 
               </button>
               <p className="mt-3 text-xs leading-relaxed text-slate-500">
                 Es libre de no autorizar. Sin estas autorizaciones la aplicación no puede registrar su asistencia
-                {e?.alternativa ? `; en ese caso: ${e.alternativa}` : '; consulte a su supervisor por la alternativa'}.
+                {e?.alternativa ? `; en ese caso: ${e.alternativa}` : ''}.
               </p>
             </div>
           </>

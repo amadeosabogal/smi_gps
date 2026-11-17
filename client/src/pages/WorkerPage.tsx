@@ -871,7 +871,7 @@ export const WorkerPage: React.FC = () => {
           checkShiftStatus();
         }}
         onRechazar={() => {
-          alert('Sin su autorización la aplicación no puede registrar su asistencia. Consulte a su supervisor por la alternativa.');
+          alert('Sin su autorización la aplicación no puede registrar su asistencia.');
           handleLogout();
         }}
       />
