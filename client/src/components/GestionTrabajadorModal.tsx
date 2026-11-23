@@ -13,6 +13,7 @@ interface Props {
 // Derechos del trabajador sobre sus datos: corregir, nuevo PIN, copia, baja y eliminación total
 export const GestionTrabajadorModal: React.FC<Props> = ({ trabajador, onClose, onCambio }) => {
   const [nombre, setNombre] = useState(trabajador.nombre);
+  const [dni, setDni] = useState(trabajador.dni || '');
   const [cargo, setCargo] = useState(trabajador.cargo || '');
   const [correo, setCorreo] = useState(trabajador.correo || '');
   const [telefono, setTelefono] = useState(trabajador.telefono || '');
@@ -40,7 +41,7 @@ export const GestionTrabajadorModal: React.FC<Props> = ({ trabajador, onClose, o
   const guardar = (e: React.FormEvent) => {
     e.preventDefault();
     ejecutar('datos', async () => {
-      await api.updateUser(trabajador.id, { nombre, cargo, correo, telefono });
+      await api.updateUser(trabajador.id, { nombre, cargo, correo, telefono, ...(dni.trim() && dni.trim() !== (trabajador.dni || '') ? { dni: dni.trim() } : {}) });
       return 'Datos corregidos.';
     });
   };
@@ -79,6 +80,11 @@ export const GestionTrabajadorModal: React.FC<Props> = ({ trabajador, onClose, o
               <form onSubmit={guardar} className="space-y-3">
                 <h4 className="text-sm font-semibold text-slate-900">Corregir datos</h4>
                 <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="sm:col-span-2">
+                    <label htmlFor="g-dni" className="field-label">DNI (con él ingresa a la app)</label>
+                    <input id="g-dni" className="field font-mono" value={dni} maxLength={12} placeholder="8 dígitos" onChange={(e) => setDni(e.target.value.replace(/[^A-Za-z0-9]/g, ''))} />
+                    {!trabajador.dni && <p className="mt-1 text-xs text-amber-700">Sin DNI el trabajador no puede ingresar.</p>}
+                  </div>
                   <div>
                     <label htmlFor="g-nombre" className="field-label">Nombre</label>
                     <input id="g-nombre" className="field" value={nombre} maxLength={150} onChange={(e) => setNombre(e.target.value)} />
@@ -164,7 +170,7 @@ export const GestionTrabajadorModal: React.FC<Props> = ({ trabajador, onClose, o
                   Borra su usuario, asistencias, almuerzos, recorridos GPS, fotos y alertas. Úselo solo cuando el trabajador lo pida por ley y no deba
                   conservarse nada. Descargue antes una copia si hace falta.
                 </p>
-                <label htmlFor="g-conf" className="field-label">Escriba el código <strong>{trabajador.codigo_empleado}</strong> para confirmar</label>
+                <label htmlFor="g-conf" className="field-label">Escriba <strong>{trabajador.codigo_empleado}</strong> para confirmar</label>
                 <input id="g-conf" className="field" value={confirmar} onChange={(e) => setConfirmar(e.target.value)} autoComplete="off" />
                 <button
                   type="button"

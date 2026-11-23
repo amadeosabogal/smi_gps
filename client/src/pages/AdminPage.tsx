@@ -176,8 +176,8 @@ export const AdminPage: React.FC = () => {
   // New Worker Modal state
   const [showNewWorkerModal, setShowNewWorkerModal] = useState<boolean>(false);
   const [trabajadorGestion, setTrabajadorGestion] = useState<Usuario | null>(null); // datos personales (corregir, PIN, copia, baja)
-  const [newWorkerCode, setNewWorkerCode] = useState<string>('');
   const [newWorkerName, setNewWorkerName] = useState<string>('');
+  const [newWorkerDni, setNewWorkerDni] = useState<string>('');
   const [newWorkerCargo, setNewWorkerCargo] = useState<string>('Operador de Campo');
   const [newWorkerPhone, setNewWorkerPhone] = useState<string>('');
   const [newWorkerPin, setNewWorkerPin] = useState<string>('');
@@ -821,14 +821,19 @@ export const AdminPage: React.FC = () => {
   // Create Worker
   const handleCreateWorker = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newWorkerCode || !newWorkerName) {
-      alert('Código y nombre son obligatorios');
+    if (!newWorkerName.trim()) {
+      alert('El nombre es obligatorio');
       return;
     }
+    if (!/^[A-Za-z0-9]{8,12}$/.test(newWorkerDni.trim())) {
+      alert('Indique el DNI del trabajador (8 dígitos; para carnet de extranjería, 8 a 12 letras y números).');
+      return;
+    }
+    const dniCreado = newWorkerDni.trim();
     setIsSavingWorker(true);
     try {
       const created = await api.createUser({
-        codigo_empleado: newWorkerCode.trim(),
+        dni: dniCreado,
         nombre: newWorkerName.trim(),
         cargo: newWorkerCargo.trim() || 'Operador de Campo',
         telefono: newWorkerPhone.trim(),
@@ -836,13 +841,13 @@ export const AdminPage: React.FC = () => {
         rol: 'trabajador',
       });
       setShowNewWorkerModal(false);
-      setNewWorkerCode('');
       setNewWorkerName('');
+      setNewWorkerDni('');
       setNewWorkerCargo('Operador de Campo');
       setNewWorkerPhone('');
       setNewWorkerPin('');
       loadData();
-      alert(`¡Trabajador registrado con éxito!\n\nPIN de acceso: ${created.pinInicial}\n(Entrégaselo ahora: no se vuelve a mostrar.)\n\nAl ingresar por primera vez podrá enrolar su rostro.`);
+      alert(`¡Trabajador registrado con éxito!\n\nDNI para ingresar: ${dniCreado}\nContraseña (PIN): ${created.pinInicial}\n(Entrégasela ahora: no se vuelve a mostrar.)\n\nAl ingresar por primera vez podrá enrolar su rostro.`);
     } catch (err: any) {
       alert(err.message || 'Error al crear trabajador');
     } finally {
@@ -1634,7 +1639,6 @@ export const AdminPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => {
-                        setNewWorkerCode(`EMP-${100 + workersList.length + 1}`);
                         setShowNewWorkerModal(true);
                       }}
                       className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition cursor-pointer shadow-md"
@@ -1680,9 +1684,22 @@ export const AdminPage: React.FC = () => {
                                 <div>
                                   <h4 className="font-bold text-xs text-slate-900 leading-tight">{worker.nombre}</h4>
                                   <p className="text-xs text-slate-500">{worker.cargo}</p>
-                                  <span className="inline-block mt-0.5 text-xs font-mono font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
-                                    {worker.codigo_empleado}
-                                  </span>
+                                  {worker.rol === 'trabajador' && worker.dni && worker.dni === worker.codigo_empleado ? (
+                                    <span className="inline-block mt-0.5 text-xs font-mono font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
+                                      DNI {worker.dni}
+                                    </span>
+                                  ) : (
+                                    <>
+                                      <span className="inline-block mt-0.5 text-xs font-mono font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
+                                        {worker.codigo_empleado}
+                                      </span>
+                                      {worker.rol === 'trabajador' && (
+                                        <p className={`mt-0.5 text-xs font-mono ${worker.dni ? 'text-slate-500' : 'font-semibold text-amber-700'}`}>
+                                          {worker.dni ? `DNI ${worker.dni}` : 'Sin DNI: no puede ingresar'}
+                                        </p>
+                                      )}
+                                    </>
+                                  )}
                                 </div>
                               </div>
 
@@ -2393,13 +2410,14 @@ export const AdminPage: React.FC = () => {
             <form onSubmit={handleCreateWorker} className="space-y-3.5 text-xs">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="field-label">Código Empleado:</label>
+                  <label className="field-label">DNI (con él ingresa a la app):</label>
                   <input
                     type="text"
                     required
-                    value={newWorkerCode}
-                    onChange={(e) => setNewWorkerCode(e.target.value)}
-                    placeholder="ej. EMP-105"
+                    maxLength={12}
+                    value={newWorkerDni}
+                    onChange={(e) => setNewWorkerDni(e.target.value.replace(/[^A-Za-z0-9]/g, ''))}
+                    placeholder="ej. 45678912"
                     className="field font-mono"
                   />
                 </div>

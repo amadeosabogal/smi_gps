@@ -96,6 +96,22 @@ async function getPool() {
 }
 
 // ¿La columna pin ya admite hashes? (se corrige con: node service/migrate-security.mjs)
+// Documento (DNI) del trabajador para el ingreso (se crea con: npm run migrate-dni). Sin la columna el ingreso es por nombre, como antes.
+let dniColumna = false;
+async function checkDniColumna() {
+  try {
+    const p = await getPool();
+    const r = await p.request().query("SELECT COL_LENGTH('Usuarios', 'dni') AS n");
+    dniColumna = Boolean(r.recordset[0].n);
+    if (!dniColumna) console.warn('⚠️ El ingreso con DNI aún no está habilitado: ejecuta  npm run migrate-dni  y reinicia.');
+  } catch (err) {
+    console.warn('No se pudo comprobar la columna dni:', err.message);
+  }
+}
+// DNI (8 dígitos) o carnet de extranjería/pasaporte (8 a 12 letras y números), sin espacios ni guiones
+const normalizarDni = (v) => String(v ?? '').replace(/[\s.-]/g, '').toUpperCase();
+const dniValido = (v) => /^[A-Z0-9]{8,12}$/.test(v);
+
 let pinColumnWide = false;
 async function checkPinColumn() {
   try {
@@ -665,6 +681,7 @@ app.get('/api/app/version', (req, res) => {
 // Lista mínima para la pantalla de ingreso del trabajador (sin datos sensibles)
 app.get('/api/public/workers', async (req, res) => {
   try {
+    if (config.loginSoloDni) return res.json([]); // el ingreso es solo con DNI: no se publica ningún nombre
     const p = await getPool();
     const r = await p.request().query(
       "SELECT id, codigo_empleado, nombre, cargo FROM Usuarios WHERE rol = 'trabajador' AND activo = 1 ORDER BY nombre ASC"
@@ -677,8 +694,9 @@ app.get('/api/public/workers', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { usuarioId, pin } = req.body || {};
+    const { usuarioId, dni, pin } = req.body || {};
     const id = Number.parseInt(usuarioId, 10);
+    const documento = normalizarDni(dni);
     await doLogin(req, res, {
       label: 'worker',
       secretValue: typeof pin === 'string' ? pin : String(pin ?? ''),
@@ -686,8 +704,15 @@ app.post('/api/auth/login', async (req, res) => {
       ttlHours: config.sessionHours,
       bloqueo: (user) => bloqueoDiaNoLaborable(user.id, 'inicio de sesión'),
       findUser: async () => {
-        if (!Number.isInteger(id)) return null;
         const p = await getPool();
+        // Ingreso con DNI y contraseña
+        if (dni !== undefined && dni !== null && dni !== '') {
+          if (!dniColumna || !dniValido(documento)) return null;
+          const r = await p.request().input('dni', sql.VarChar(12), documento).query('SELECT * FROM Usuarios WHERE dni = @dni');
+          return r.recordset[0] || null;
+        }
+        // Ingreso antiguo por nombre (app anterior): solo mientras no se exija el DNI
+        if (config.loginSoloDni || !Number.isInteger(id)) return null;
         const r = await p.request().input('id', sql.Int, id).query('SELECT * FROM Usuarios WHERE id = @id');
         return r.recordset[0] || null;
       },
@@ -1104,6 +1129,7 @@ app.get('/api/users', requireAuth(ROLES_STAFF), async (req, res) => {
     // /api/photos/user/:id/reference. foto_ref_bytes sirve de versión para el caché del navegador.
     const result = await p.request().input('v', sql.Int, config.privacidadVersion).query(
       `SELECT id, codigo_empleado, nombre, correo, rol, cargo, telefono, activo, facial_enrolado,
+              ${dniColumna ? 'dni,' : ''}
               ISNULL(DATALENGTH(foto_referencia_url), 0) AS foto_ref_bytes
               ${privacidadTabla ? ', (SELECT MAX(a.aceptado_en) FROM AceptacionesPrivacidad a WHERE a.usuario_id = Usuarios.id AND a.version = @v) AS privacidad_aceptada_en' : ''}
          FROM Usuarios`
@@ -1116,10 +1142,13 @@ app.get('/api/users', requireAuth(ROLES_STAFF), async (req, res) => {
 
 app.post('/api/users', requireAuth(ROLES_ADMIN), async (req, res) => {
   try {
-    const { codigo_empleado, nombre, correo, cargo, telefono, pin } = req.body || {};
+    const { codigo_empleado, nombre, correo, cargo, telefono, pin, dni } = req.body || {};
 
-    if (!codigo_empleado || !nombre) {
-      return res.status(400).json({ error: 'Código de empleado y nombre son obligatorios' });
+    // Con el ingreso por DNI habilitado, el código del trabajador ES su DNI (no se escribe aparte)
+    const documento = normalizarDni(dni);
+    const codigoFinal = dniColumna ? documento : String(codigo_empleado || '').trim();
+    if (!nombre || (!dniColumna && !codigoFinal)) {
+      return res.status(400).json({ error: dniColumna ? 'El DNI y el nombre son obligatorios' : 'Código de empleado y nombre son obligatorios' });
     }
     if (pin !== undefined && pin !== null && pin !== '' && !/^\d{4,6}$/.test(String(pin))) {
       return res.status(400).json({ error: 'El PIN debe tener entre 4 y 6 dígitos' });
@@ -1129,27 +1158,35 @@ app.post('/api/users', requireAuth(ROLES_ADMIN), async (req, res) => {
     }
 
     const p = await getPool();
-    const existe = await p.request().input('codigo', sql.VarChar(50), String(codigo_empleado)).query('SELECT id FROM Usuarios WHERE codigo_empleado = @codigo');
+    const existe = await p.request().input('codigo', sql.VarChar(50), codigoFinal).query('SELECT id FROM Usuarios WHERE codigo_empleado = @codigo');
     if (existe.recordset.length > 0) {
-      return res.status(400).json({ error: 'Ya existe un usuario con este código de empleado' });
+      return res.status(400).json({ error: dniColumna ? 'Ya existe un usuario con ese DNI' : 'Ya existe un usuario con este código de empleado' });
     }
 
-    const email = correo || `${String(codigo_empleado).toLowerCase()}@smi.pe`;
+    // DNI: obligatorio cuando el ingreso con DNI está habilitado
+    if (dniColumna) {
+      if (!dniValido(documento)) return res.status(400).json({ error: 'Indique el DNI del trabajador (8 dígitos; para carnet de extranjería, 8 a 12 letras y números).' });
+      const dup = await p.request().input('dni', sql.VarChar(12), documento).query('SELECT 1 AS ok FROM Usuarios WHERE dni = @dni');
+      if (dup.recordset.length) return res.status(400).json({ error: 'Ya existe un usuario con ese DNI' });
+    }
+
+    const email = correo || `${codigoFinal.toLowerCase()}@smi.pe`;
     // Si no se indica PIN, se genera uno aleatorio y se muestra UNA sola vez
     const pinInicial = pin ? String(pin) : String(crypto.randomInt(100000, 999999));
 
     const result = await p.request()
-      .input('codigo', sql.VarChar(50), String(codigo_empleado).slice(0, 50))
+      .input('codigo', sql.VarChar(50), codigoFinal.slice(0, 50))
       .input('nombre', sql.NVarChar(150), String(nombre).slice(0, 150))
       .input('correo', sql.VarChar(150), String(email).slice(0, 150))
       .input('pin', sql.VarChar(200), await hashPinAsync(pinInicial))
       .input('cargo', sql.NVarChar(100), String(cargo || 'Operador de Campo').slice(0, 100))
       .input('telefono', sql.VarChar(30), String(telefono || '').slice(0, 30))
+      .input('dni', sql.VarChar(12), dniColumna ? documento : null)
       .query(`
-        INSERT INTO Usuarios (codigo_empleado, nombre, correo, pin, rol, cargo, telefono, activo, facial_enrolado, creado_en)
+        INSERT INTO Usuarios (codigo_empleado, nombre, correo, pin, rol, cargo, telefono, activo, facial_enrolado, creado_en${dniColumna ? ', dni' : ''})
         OUTPUT INSERTED.id, INSERTED.codigo_empleado, INSERTED.nombre, INSERTED.correo, INSERTED.rol, INSERTED.cargo,
-               INSERTED.telefono, INSERTED.activo, INSERTED.facial_enrolado
-        VALUES (@codigo, @nombre, @correo, @pin, 'trabajador', @cargo, @telefono, 1, 0, GETDATE());
+               INSERTED.telefono, INSERTED.activo, INSERTED.facial_enrolado${dniColumna ? ', INSERTED.dni' : ''}
+        VALUES (@codigo, @nombre, @correo, @pin, 'trabajador', @cargo, @telefono, 1, 0, GETDATE()${dniColumna ? ', @dni' : ''});
       `);
 
     const nuevoUsuario = result.recordset[0];
@@ -1180,7 +1217,7 @@ app.put('/api/users/:id', requireAuth(ROLES_ADMIN), async (req, res) => {
   try {
     const u = await trabajadorParaGestion(req, res);
     if (!u) return;
-    const { nombre, cargo, correo, telefono } = req.body || {};
+    const { nombre, cargo, correo, telefono, dni } = req.body || {};
     const sets = [];
     const rq = (await getPool()).request().input('id', sql.Int, u.id);
     if (nombre !== undefined) {
@@ -1193,11 +1230,19 @@ app.put('/api/users/:id', requireAuth(ROLES_ADMIN), async (req, res) => {
       sets.push('correo = @correo'); rq.input('correo', sql.VarChar(150), correo.trim().slice(0, 150));
     }
     if (telefono !== undefined) { sets.push('telefono = @telefono'); rq.input('telefono', sql.VarChar(30), String(telefono || '').trim().slice(0, 30)); }
+    if (dni !== undefined) {
+      if (!dniColumna) return res.status(503).json({ error: 'El ingreso con DNI aún no está habilitado en el servidor: ejecute  npm run migrate-dni  y reinicie.', codigo: 'DNI_NO_DISPONIBLE' });
+      const documento = normalizarDni(dni);
+      if (!dniValido(documento)) return res.status(400).json({ error: 'DNI inválido (8 dígitos; para carnet de extranjería, 8 a 12 letras y números).' });
+      sets.push('dni = @dni', 'codigo_empleado = @dni'); rq.input('dni', sql.VarChar(12), documento); // el código del trabajador es su DNI
+    }
     if (!sets.length) return res.status(400).json({ error: 'No hay nada que cambiar' });
     try {
       await rq.query(`UPDATE Usuarios SET ${sets.join(', ')} WHERE id = @id`);
     } catch (err) {
-      if (err.number === 2627 || err.number === 2601) return res.status(400).json({ error: 'Ese correo ya está en uso por otra cuenta' });
+      if (err.number === 2627 || err.number === 2601) {
+        return res.status(400).json({ error: /dni|codigo/i.test(err.message) ? 'Ese DNI ya está registrado en otra cuenta' : 'Ese correo ya está en uso por otra cuenta' });
+      }
       throw err;
     }
     console.log(`🗂️ [DATOS] Admin ${req.user.id} corrigió los datos del trabajador ${u.id} (${sets.length} campo(s)).`);
@@ -2683,4 +2728,5 @@ server.listen(config.port, '0.0.0.0', () => {
   checkAlmuerzoTabla();
   checkCalendarioTablas();
   checkPrivacidadTabla();
+  checkDniColumna();
 });

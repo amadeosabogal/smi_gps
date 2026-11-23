@@ -201,6 +201,24 @@ En **Historial de asistencia** (botón "Ver recorrido" de cada turno) y en **Per
 
 Pendiente para producción: subir el servidor con los endpoints nuevos (`/api/location/batch` y `/api/location/track-token`) y publicar el APK en una ruta del dominio.
 
+### Ingreso del trabajador con DNI y contraseña
+El trabajador ya no busca su nombre en una lista: escribe su **DNI** y su **contraseña** (el mismo PIN de 4 a 6 dígitos de siempre). Así la pantalla de ingreso no muestra ningún nombre.
+- **Puesta en marcha (una vez):** `npm run migrate-dni` (añade `Usuarios.dni`, único; con `--dry-run` solo simula) y `pm2 restart smi-gps`.
+- **El código del trabajador pasa a ser su DNI** (por ejemplo, `EMP-106` -> `74027616`). Los administradores y supervisores conservan su código (`ADM-001`). El historial no se pierde: está ligado al trabajador, no a su código.
+- **Cargar los DNI de los trabajadores que ya existen, con un archivo** (`service/cargar-dnis.mjs`):
+  1. `node service/cargar-dnis.mjs --listar` crea `dnis.csv` con los trabajadores actuales (columnas `codigo_actual,nombre,dni`, con `dni` vacío).
+  2. Edita `dnis.csv` (por ejemplo con `nano`) y escribe el DNI de cada uno en la tercera columna.
+  3. `node service/cargar-dnis.mjs` **simula**: valida (formato, repetidos, códigos que no existen) y muestra qué cambiaría; no toca nada.
+  4. `node service/cargar-dnis.mjs --apply` aplica los cambios en una sola transacción. Luego `pm2 restart smi-gps`.
+  5. **Borra `dnis.csv`** al terminar (contiene datos personales). Ya está en `.gitignore` para que no se suba a git.
+- **Dar de alta varios trabajadores nuevos con un archivo** (`service/agregar-trabajadores.mjs`): crea un archivo con una línea por persona (`DNI`, tabulador o espacio, `nombre completo`), ejecuta `node service/agregar-trabajadores.mjs --archivo=nuevos.txt` (**simula**: no crea nada, avisa de DNI repetidos o de alguien que ya existe con ese nombre) y luego con `--apply`. Al aplicar muestra la **contraseña (PIN) de cada uno una sola vez**: entrégasela. Borra el archivo después (tiene datos personales).
+- **Trabajadores nuevos:** el panel pide solo el DNI (obligatorio; 8 dígitos, o 8 a 12 letras y números para carnet de extranjería o pasaporte) y el código se asigna solo. No puede repetirse. Para corregir el DNI de alguien: *Personal y biometría* → **Datos** → DNI (el código cambia con él).
+- Las tarjetas sin DNI muestran "Sin DNI: no puede ingresar".
+- **Transición sin cortar a nadie:** mientras `LOGIN_SOLO_DNI=false` (valor por defecto), las apps anteriores siguen ingresando por nombre y la lista pública de nombres sigue disponible. La app nueva (1.0.6) y la web ya piden el DNI.
+- **Cuando todos tengan la app 1.0.6 y su DNI cargado**, pon `LOGIN_SOLO_DNI=true` y reinicia: se apaga el ingreso antiguo por nombre y la lista pública de nombres queda vacía (ya no se publica ningún nombre).
+- El DNI es un dato personal más: figura en el aviso de privacidad y en la copia de datos del trabajador.
+- Para quitar a un trabajador (por ejemplo, de prueba): *Personal y biometría* → **Datos** → *Eliminar todos sus datos* (pide escribir su código de empleado). Es irreversible.
+
 ### Protección de datos personales: plazos, aviso en la app y derechos del trabajador
 Complementa el aviso de privacidad y la guía para la empresa (documentos aparte). Todo se activa con una migración y variables en `service/.env`.
 

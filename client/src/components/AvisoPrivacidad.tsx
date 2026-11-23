@@ -95,7 +95,7 @@ export const AvisoPrivacidad: React.FC<Props> = ({ onAceptado, onRechazar }) => 
                 seguridad, calcular su tiempo trabajado (incluido el almuerzo) y prevenir fraudes.
               </p>
               <ul className="list-disc space-y-1 pl-5">
-                <li>Nombre, código, cargo, correo y teléfono; su PIN se guarda cifrado.</li>
+                <li>Nombre, DNI, cargo, correo y teléfono; su contraseña se guarda cifrada.</li>
                 <li>
                   <strong>Rostro (dato biométrico, sensible):</strong> una foto de referencia, una huella numérica (una lista de números, no una imagen)
                   y una foto en cada verificación, con el porcentaje de parecido.
@@ -157,7 +157,7 @@ export const AvisoPrivacidad: React.FC<Props> = ({ onAceptado, onRechazar }) => 
               </ul>
               <p>
                 Tiene derecho a saber qué datos suyos se tratan, pedir una copia, corregirlos, pedir que se eliminen, oponerse a un uso y
-                retirar su autorización cuando quiera (Ley N.º 29733). Escriba a {e?.correoDatos || 'la empresa'} indicando su nombre y código. Si no
+                retirar su autorización cuando quiera (Ley N.º 29733). Escriba a {e?.correoDatos || 'la empresa'} indicando su nombre y DNI. Si no
                 está conforme, puede reclamar ante la Autoridad Nacional de Protección de Datos Personales.
               </p>
             </Seccion>
@@ -185,7 +185,7 @@ export const AvisoPrivacidad: React.FC<Props> = ({ onAceptado, onRechazar }) => 
                 <label className="flex cursor-pointer items-start gap-3 text-sm text-slate-800">
                   <input type="checkbox" className="mt-1 h-4 w-4" checked={datos} onChange={(ev) => setDatos(ev.target.checked)} />
                   <span>
-                    <strong>Datos de identificación y asistencia.</strong> Autorizo el tratamiento de mi nombre, código, cargo, horas de entrada y
+                    <strong>Datos de identificación y asistencia.</strong> Autorizo el tratamiento de mi nombre, DNI, cargo, horas de entrada y
                     salida y demás datos indicados, para calcular mi tiempo trabajado.
                   </span>
                 </label>

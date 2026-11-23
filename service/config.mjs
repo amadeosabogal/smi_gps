@@ -63,6 +63,9 @@ export const config = {
   almuerzosPorTurno: Number(env.ALMUERZOS_POR_TURNO || 1),
   // Zona horaria con la que se decide qué día es "hoy" para el calendario de días no laborables
   zonaHoraria: env.BUSINESS_TZ || 'America/Lima',
+  // true = el trabajador SOLO ingresa con DNI y contraseña: se apaga el ingreso antiguo por nombre y la lista pública de nombres.
+  // Dejar en false mientras haya celulares con la app antigua o trabajadores sin DNI cargado.
+  loginSoloDni: env.LOGIN_SOLO_DNI === 'true',
   // Plazos de conservación de datos personales (días; vacío = no borrar nunca; mínimo 30). Ver service/retencion.mjs
   retencionFotosDias: Number(env.RETENCION_FOTOS_DIAS || 0),
   retencionRegistrosDias: Number(env.RETENCION_REGISTROS_DIAS || 0),

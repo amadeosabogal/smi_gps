@@ -116,8 +116,9 @@ export const api = {
     return request('/public/workers', {}, { auth: false });
   },
 
-  async login(usuarioId: number, pin: string): Promise<Usuario> {
-    const data = await request('/auth/login', { method: 'POST', body: JSON.stringify({ usuarioId, pin }) }, { auth: false });
+  /** Ingreso del trabajador con su DNI y su contraseña (PIN) */
+  async login(dni: string, pin: string): Promise<Usuario> {
+    const data = await request('/auth/login', { method: 'POST', body: JSON.stringify({ dni, pin }) }, { auth: false });
     auth.setToken(data.token);
     return data.user;
   },
@@ -243,7 +244,8 @@ export const api = {
   },
 
   async createUser(data: {
-    codigo_empleado: string;
+    codigo_empleado?: string; // con ingreso por DNI el código es el propio DNI
+    dni?: string;
     nombre: string;
     cargo?: string;
     correo?: string;
@@ -295,7 +297,7 @@ export const api = {
   },
 
   // ----- Gestión de datos del personal -----
-  async updateUser(id: number, datos: { nombre?: string; cargo?: string; correo?: string; telefono?: string }): Promise<void> {
+  async updateUser(id: number, datos: { nombre?: string; cargo?: string; correo?: string; telefono?: string; dni?: string }): Promise<void> {
     await request(`/users/${id}`, { method: 'PUT', body: JSON.stringify(datos) });
   },
 

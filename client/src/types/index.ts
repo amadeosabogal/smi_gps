@@ -1,6 +1,7 @@
 export interface Usuario {
   id: number;
   codigo_empleado: string;
+  dni?: string | null; // documento con el que el trabajador ingresa a la app
   nombre: string;
   correo: string;
   rol: 'administrador' | 'supervisor' | 'trabajador';

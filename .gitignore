@@ -28,3 +28,8 @@ dist-ssr
 .env.*
 !.env.example
 service/.env
+
+# Documentos de protección de datos (se entregan por fuera del repositorio)
+documentos-privacidad/
+
+dnis.csv

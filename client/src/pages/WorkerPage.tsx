@@ -17,12 +17,12 @@ import { DiaNoLaborable } from '../components/DiaNoLaborable';
 import { AvisoPrivacidad } from '../components/AvisoPrivacidad';
 
 export const WorkerPage: React.FC = () => {
-  const [workers, setWorkers] = useState<Usuario[]>([]);
   const [workstations, setWorkstations] = useState<EstacionTrabajo[]>([]);
   const [selectedUser, setSelectedUser] = useState<Usuario | null>(null);
 
   // Authentication by PIN
   const [pinInput, setPinInput] = useState<string>('');
+  const [dniInput, setDniInput] = useState<string>('');
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => Boolean(auth.getToken()));
   const [loginLoading, setLoginLoading] = useState<boolean>(false);
   const [alertaActiva, setAlertaActiva] = useState<{ id: number | null; mensaje: string } | null>(null);
@@ -82,14 +82,13 @@ export const WorkerPage: React.FC = () => {
   // Aviso de privacidad: si la empresa lo exige y aún no lo aceptó, se muestra antes de cualquier otra pantalla
   const [avisoPendiente, setAvisoPendiente] = useState<boolean>(false);
 
-  // Carga inicial: lista pública de nombres para el ingreso y, si hay sesión, el perfil y las estaciones
+  // Carga inicial: si hay sesión, el perfil y las estaciones (el ingreso es con DNI: ya no se pide ninguna lista de nombres)
   const loadData = useCallback(async () => {
     try {
       if (auth.getToken()) {
         try {
           const [me, stationsData] = await Promise.all([api.getMe(), api.getWorkstations()]);
           setSelectedUser(me);
-          setWorkers([me]);
           setWorkstations(stationsData);
           setIsAuthenticated(true);
           connectSocket();
@@ -105,10 +104,8 @@ export const WorkerPage: React.FC = () => {
         }
       }
 
-      const publicWorkers = await api.getPublicWorkers();
-      const asUsers: Usuario[] = publicWorkers.map((w) => ({ ...w, correo: '', rol: 'trabajador', activo: true }));
-      setWorkers(asUsers);
-      if (asUsers.length > 0) setSelectedUser(asUsers[0]);
+      // Sin sesión: solo se comprueba que el servidor responda, para mostrar la pantalla de ingreso (o el aviso de sin conexión)
+      await api.getCalendarioHoy();
       setCargaError(null);
       setLoading(false);
     } catch (err: any) {
@@ -390,12 +387,13 @@ export const WorkerPage: React.FC = () => {
   // Ingreso: el servidor valida el PIN (con límite de intentos) y entrega la sesión
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedUser || loginLoading) return;
+    if (loginLoading) return;
     setLoginLoading(true);
     try {
-      const me = await api.login(selectedUser.id, pinInput);
+      const me = await api.login(dniInput.trim(), pinInput);
       setSelectedUser(me);
       setPinInput('');
+      setDniInput('');
       const stationsData = await api.getWorkstations();
       setWorkstations(stationsData);
       setIsAuthenticated(true);
@@ -907,7 +905,7 @@ export const WorkerPage: React.FC = () => {
     return (
       <AuthLayout
         titulo="Iniciar sesión"
-        subtitulo="Seleccione su nombre e ingrese su PIN para registrar su asistencia."
+        subtitulo="Ingrese su DNI y su contraseña para registrar su asistencia."
         panelTitulo="Control de asistencia y geolocalización"
         panelTexto="Registre su entrada y salida con reconocimiento facial y ubicación verificada en su estación de trabajo."
       >
@@ -919,34 +917,25 @@ export const WorkerPage: React.FC = () => {
         )}
         <form onSubmit={handleLogin} className="space-y-5">
           <div>
-            <label htmlFor="trabajador" className="field-label">
-              Trabajador
+            <label htmlFor="dni" className="field-label">
+              DNI
             </label>
-            <select
-              id="trabajador"
-              value={selectedUser?.id || ''}
-              onChange={(e) => {
-                const u = workers.find((w) => w.id === Number(e.target.value));
-                if (u) setSelectedUser(u);
-              }}
+            <input
+              id="dni"
+              type="text"
+              maxLength={12}
+              value={dniInput}
+              onChange={(e) => setDniInput(e.target.value.replace(/[^A-Za-z0-9]/g, ''))}
+              placeholder="Ingrese su DNI"
+              inputMode="numeric"
+              autoComplete="username"
               className="field"
-            >
-              {workers.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.nombre} ({w.codigo_empleado})
-                </option>
-              ))}
-            </select>
-            {selectedUser && (
-              <p className="mt-1.5 text-sm text-slate-600">
-                {selectedUser.cargo} · Código {selectedUser.codigo_empleado}
-              </p>
-            )}
+            />
           </div>
 
           <div>
             <label htmlFor="pin" className="field-label">
-              PIN
+              Contraseña
             </label>
             <input
               id="pin"
@@ -954,14 +943,14 @@ export const WorkerPage: React.FC = () => {
               maxLength={6}
               value={pinInput}
               onChange={(e) => setPinInput(e.target.value)}
-              placeholder="Ingrese su PIN"
+              placeholder="Ingrese su contraseña"
               inputMode="numeric"
-              autoComplete="off"
+              autoComplete="current-password"
               className="field"
             />
           </div>
 
-          <button type="submit" disabled={loginLoading || pinInput.length < 4} className="btn-primary w-full">
+          <button type="submit" disabled={loginLoading || dniInput.length < 8 || pinInput.length < 4} className="btn-primary w-full">
             {loginLoading ? 'Verificando…' : 'Ingresar'}
           </button>
         </form>

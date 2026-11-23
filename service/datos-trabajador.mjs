@@ -20,8 +20,9 @@ export async function exportarDatos(pool, usuarioId, { fotos = false } = {}) {
     const r = await pool.request().input('u', sql.Int, usuarioId).query(consulta);
     return r.recordset.map((fila) => (fotos ? fila : sinFotos(fila)));
   };
+  const tieneDni = Boolean((await pool.request().query("SELECT COL_LENGTH('Usuarios', 'dni') AS n")).recordset[0].n);
   const usuario = (await pool.request().input('u', sql.Int, usuarioId).query(
-    `SELECT id, codigo_empleado, nombre, correo, rol, cargo, telefono, activo, facial_enrolado, creado_en, foto_referencia_url
+    `SELECT id, codigo_empleado, ${tieneDni ? 'dni, ' : ''}nombre, correo, rol, cargo, telefono, activo, facial_enrolado, creado_en, foto_referencia_url
        FROM Usuarios WHERE id = @u`
   )).recordset[0];
   if (!usuario) return null;
