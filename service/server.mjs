@@ -1086,6 +1086,82 @@ app.post('/api/workstations', requireAuth(ROLES_ADMIN), async (req, res) => {
   }
 });
 
+// Editar una estación (nombre, código, ubicación, radio, color, descripción). Solo se envían los campos que cambian.
+// Las asistencias pasadas apuntan a la estación por id, así que mostrarán el nombre nuevo.
+app.put('/api/workstations/:id', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Solicitud inválida' });
+
+    const { codigo, nombre, latitud, longitud, radio_metros, color, descripcion } = req.body || {};
+    if (codigo !== undefined && !String(codigo).trim()) return res.status(400).json({ error: 'El código no puede quedar vacío' });
+    if (nombre !== undefined && !String(nombre).trim()) return res.status(400).json({ error: 'El nombre no puede quedar vacío' });
+    if ((latitud !== undefined || longitud !== undefined) && !validCoords(latitud, longitud)) {
+      return res.status(400).json({ error: 'Coordenadas inválidas' });
+    }
+    if (radio_metros !== undefined && !(isNum(radio_metros) && radio_metros > 0 && radio_metros <= 5000)) {
+      return res.status(400).json({ error: 'El radio debe estar entre 1 y 5000 metros' });
+    }
+
+    const p = await getPool();
+    const actual = await p.request().input('id', sql.Int, id)
+      .query('SELECT * FROM EstacionesTrabajo WHERE id = @id AND activo = 1');
+    if (!actual.recordset.length) return res.status(404).json({ error: 'Estación no encontrada' });
+    const antes = actual.recordset[0];
+
+    const nuevo = {
+      codigo: codigo !== undefined ? String(codigo).trim().slice(0, 50) : antes.codigo,
+      nombre: nombre !== undefined ? String(nombre).trim().slice(0, 150) : antes.nombre,
+      latitud: latitud !== undefined ? latitud : antes.latitud,
+      longitud: longitud !== undefined ? longitud : antes.longitud,
+      radio: radio_metros !== undefined ? radio_metros : antes.radio_metros,
+      color: color !== undefined ? String(color).slice(0, 20) : antes.color,
+      descripcion: descripcion !== undefined ? String(descripcion || '').slice(0, 255) : antes.descripcion,
+    };
+
+    if (nuevo.codigo !== antes.codigo) {
+      const dup = await p.request().input('id', sql.Int, id).input('codigo', sql.VarChar(50), nuevo.codigo)
+        .query('SELECT 1 FROM EstacionesTrabajo WHERE codigo = @codigo AND id <> @id');
+      if (dup.recordset.length) return res.status(409).json({ error: `Ya existe una estación con el código "${nuevo.codigo}"` });
+    }
+
+    const result = await p.request()
+      .input('id', sql.Int, id)
+      .input('codigo', sql.VarChar(50), nuevo.codigo)
+      .input('nombre', sql.NVarChar(150), nuevo.nombre)
+      .input('latitud', sql.Float, nuevo.latitud)
+      .input('longitud', sql.Float, nuevo.longitud)
+      .input('radio', sql.Float, nuevo.radio)
+      .input('color', sql.VarChar(20), nuevo.color)
+      .input('descripcion', sql.NVarChar(255), nuevo.descripcion)
+      .query(`
+        UPDATE EstacionesTrabajo
+        SET codigo = @codigo, nombre = @nombre, latitud = @latitud, longitud = @longitud,
+            radio_metros = @radio, color = @color, descripcion = @descripcion
+        OUTPUT INSERTED.*
+        WHERE id = @id AND activo = 1;
+      `);
+
+    const estacion = result.recordset[0];
+    estacionesCache = null; // la próxima consulta vuelve a leer las estaciones
+    lastPings.clear();      // la geocerca cambió: se vuelve a calcular quién está dentro con el siguiente punto GPS
+    io.emit('workstations_updated', estacion);
+
+    const cambios = [];
+    if (antes.codigo !== estacion.codigo) cambios.push(`código: ${antes.codigo} → ${estacion.codigo}`);
+    if (antes.nombre !== estacion.nombre) cambios.push(`nombre: ${antes.nombre} → ${estacion.nombre}`);
+    if (antes.radio_metros !== estacion.radio_metros) cambios.push(`radio: ${antes.radio_metros} → ${estacion.radio_metros} m`);
+    if (antes.latitud !== estacion.latitud || antes.longitud !== estacion.longitud) cambios.push('ubicación');
+    if (antes.color !== estacion.color) cambios.push('color');
+    if ((antes.descripcion || '') !== (estacion.descripcion || '')) cambios.push('descripción');
+    console.log(`✏️ [ESTACIÓN] ${req.user.id} editó la estación ${id}: ${cambios.join('; ') || 'sin cambios'}.`);
+
+    res.json(estacion);
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
 // Eliminar una estación. Es una baja lógica (activo = 0): el historial de asistencia y los recorridos conservan
 // su nombre, pero deja de usarse para detectar si un trabajador está dentro de zona.
 app.delete('/api/workstations/:id', requireAuth(ROLES_ADMIN), async (req, res) => {

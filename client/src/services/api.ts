@@ -347,6 +347,10 @@ export const api = {
   },
 
   /** Elimina (da de baja) una estación. El historial conserva su nombre. */
+  async updateWorkstation(id: number, data: Partial<EstacionTrabajo>): Promise<EstacionTrabajo> {
+    return request(`/workstations/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  },
+
   async deleteWorkstation(id: number): Promise<{ exito: boolean; id: number; nombre: string }> {
     return request(`/workstations/${id}`, { method: 'DELETE' });
   },

@@ -25,6 +25,7 @@ import {
   Search,
   Plus,
   Trash2,
+  Pencil,
   Battery,
   BatteryCharging,
   BatteryLow,
@@ -165,6 +166,11 @@ export const AdminPage: React.FC = () => {
   const [newRadius, setNewRadius] = useState('50');
   const [newColor, setNewColor] = useState('#3B82F6');
   const [isSavingStation, setIsSavingStation] = useState(false);
+
+  // Editar una estación existente
+  const [editStation, setEditStation] = useState<EstacionTrabajo | null>(null);
+  const [editForm, setEditForm] = useState({ codigo: '', nombre: '', descripcion: '', latitud: '', longitud: '', radio: '', color: '#3B82F6' });
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   // Recorrido de un turno (visor con mapa y reproducción)
   const [rutaTurnoId, setRutaTurnoId] = useState<number | null>(null);
@@ -475,7 +481,10 @@ export const AdminPage: React.FC = () => {
     });
 
     socket.on('workstations_updated', (newStation: EstacionTrabajo) => {
-      setWorkstations((prev) => (prev.some((s) => s.id === newStation.id) ? prev : [...prev, newStation]));
+      // Estación nueva, o editada (se reemplaza por la versión actualizada)
+      setWorkstations((prev) =>
+        prev.some((s) => s.id === newStation.id) ? prev.map((s) => (s.id === newStation.id ? newStation : s)) : [...prev, newStation]
+      );
     });
 
     // Inicio o fin de un almuerzo: se refresca el estado en vivo y el historial
@@ -768,6 +777,58 @@ export const AdminPage: React.FC = () => {
       alert(err.message || 'No se pudo registrar la salida forzada');
     } finally {
       setForzando(false);
+    }
+  };
+
+  const abrirEditarEstacion = (st: EstacionTrabajo) => {
+    setEditStation(st);
+    setEditForm({
+      codigo: st.codigo,
+      nombre: st.nombre,
+      descripcion: st.descripcion || '',
+      latitud: String(st.latitud),
+      longitud: String(st.longitud),
+      radio: String(st.radio_metros),
+      color: st.color || '#3B82F6',
+    });
+  };
+
+  const handleSaveEditStation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editStation) return;
+    const lat = parseFloat(editForm.latitud);
+    const lng = parseFloat(editForm.longitud);
+    const radio = parseFloat(editForm.radio);
+    if (!editForm.codigo.trim() || !editForm.nombre.trim()) {
+      alert('El código y el nombre son obligatorios');
+      return;
+    }
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      alert('Las coordenadas no son válidas');
+      return;
+    }
+    if (!Number.isFinite(radio) || radio <= 0 || radio > 5000) {
+      alert('El radio debe estar entre 1 y 5000 metros');
+      return;
+    }
+    setIsSavingEdit(true);
+    try {
+      const actualizada = await api.updateWorkstation(editStation.id, {
+        codigo: editForm.codigo.trim(),
+        nombre: editForm.nombre.trim(),
+        descripcion: editForm.descripcion.trim(),
+        latitud: lat,
+        longitud: lng,
+        radio_metros: radio,
+        color: editForm.color,
+      });
+      setWorkstations((prev) => prev.map((s) => (s.id === actualizada.id ? actualizada : s)));
+      setEditStation(null);
+      loadData();
+    } catch (err: any) {
+      alert(err.message || 'No se pudo guardar la estación');
+    } finally {
+      setIsSavingEdit(false);
     }
   };
 
@@ -1946,14 +2007,24 @@ export const AdminPage: React.FC = () => {
                       </div>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteStation(st)}
-                      className="mt-4 inline-flex items-center justify-center gap-1.5 border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-50"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      Eliminar estación
-                    </button>
+                    <div className="mt-4 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => abrirEditarEstacion(st)}
+                        className="inline-flex items-center justify-center gap-1.5 border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        Editar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteStation(st)}
+                        className="inline-flex items-center justify-center gap-1.5 border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Eliminar
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1961,6 +2032,104 @@ export const AdminPage: React.FC = () => {
           </>
         )}
       </main>
+
+      {/* Modal: Editar Estación */}
+      {editStation && (
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto">
+            <h3 className="font-bold text-lg text-slate-900 mb-1">Editar estación</h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Los registros de asistencia anteriores mostrarán el nombre nuevo. Un cambio de radio o ubicación se aplica desde el siguiente punto GPS.
+            </p>
+            <form onSubmit={handleSaveEditStation} className="space-y-3 text-xs">
+              <div>
+                <label className="field-label">Código:</label>
+                <input
+                  type="text"
+                  required
+                  value={editForm.codigo}
+                  onChange={(e) => setEditForm({ ...editForm, codigo: e.target.value })}
+                  className="field"
+                />
+              </div>
+              <div>
+                <label className="field-label">Nombre de Estación:</label>
+                <input
+                  type="text"
+                  required
+                  value={editForm.nombre}
+                  onChange={(e) => setEditForm({ ...editForm, nombre: e.target.value })}
+                  className="field"
+                />
+              </div>
+              <div>
+                <label className="field-label">Descripción:</label>
+                <input
+                  type="text"
+                  value={editForm.descripcion}
+                  onChange={(e) => setEditForm({ ...editForm, descripcion: e.target.value })}
+                  className="field"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="field-label">Latitud:</label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    value={editForm.latitud}
+                    onChange={(e) => setEditForm({ ...editForm, latitud: e.target.value })}
+                    className="field font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="field-label">Longitud:</label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    value={editForm.longitud}
+                    onChange={(e) => setEditForm({ ...editForm, longitud: e.target.value })}
+                    className="field font-mono"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="field-label">Radio (metros):</label>
+                  <input
+                    type="number"
+                    required
+                    min={1}
+                    max={5000}
+                    value={editForm.radio}
+                    onChange={(e) => setEditForm({ ...editForm, radio: e.target.value })}
+                    className="field"
+                  />
+                </div>
+                <div>
+                  <label className="field-label">Color Identificador:</label>
+                  <input
+                    type="color"
+                    value={editForm.color}
+                    onChange={(e) => setEditForm({ ...editForm, color: e.target.value })}
+                    className="field"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-end space-x-2 pt-4">
+                <button type="button" onClick={() => setEditStation(null)} className="btn-secondary">
+                  Cancelar
+                </button>
+                <button type="submit" disabled={isSavingEdit} className="btn-primary">
+                  {isSavingEdit ? 'Guardando…' : 'Guardar cambios'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Modal: Nueva Estación */}
       {showNewStationModal && (
