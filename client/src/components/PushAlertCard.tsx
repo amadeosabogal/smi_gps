@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { marcaNombre } from '../brand';
 import { Bell, BellOff, BellRing } from 'lucide-react';
 import { enablePush, getPushState, type PushState } from '../services/push';
 
@@ -77,7 +78,7 @@ export const PushAlertCard: React.FC = () => {
         {state === 'ios-instalar' && (
           <p className="mt-0.5 text-sm text-amber-800">
             En iPhone o iPad las alertas solo funcionan con la app instalada: toque <strong>Compartir</strong> →{' '}
-            <strong>Añadir a pantalla de inicio</strong> y abra SMI desde ese ícono.
+            <strong>Añadir a pantalla de inicio</strong> y abra {marcaNombre} desde ese ícono.
           </p>
         )}
 

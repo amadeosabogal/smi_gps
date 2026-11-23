@@ -1,5 +1,6 @@
 import React from 'react';
 import { BrandLogo } from './BrandLogo';
+import { marcaNombre } from '../brand';
 
 interface AuthLayoutProps {
   titulo: string;
@@ -19,7 +20,7 @@ export const AuthLayout: React.FC<AuthLayoutProps> = ({ titulo, subtitulo, panel
         <h2 className="text-3xl font-semibold leading-tight">{panelTitulo}</h2>
         <p className="mt-4 text-base leading-relaxed text-brand-100">{panelTexto}</p>
       </div>
-      <p className="hidden text-sm text-brand-200 md:block">© {new Date().getFullYear()} SMI. Todos los derechos reservados.</p>
+      <p className="hidden text-sm text-brand-200 md:block">© {new Date().getFullYear()} {marcaNombre}. Todos los derechos reservados.</p>
     </aside>
 
     <main className="flex flex-1 items-start justify-center px-6 py-8 md:items-center md:px-12 md:py-10">

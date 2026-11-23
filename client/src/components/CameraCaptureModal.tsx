@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { marcaNombre } from '../brand';
 import { Camera, RefreshCw, CheckCircle, X, AlertCircle, Upload, SwitchCamera } from 'lucide-react';
 
 interface CameraCaptureModalProps {
@@ -129,7 +130,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       ctx.fillRect(0, canvas.height - 36, canvas.width, 36);
       ctx.fillStyle = '#FFFFFF';
       ctx.font = 'bold 13px Archivo, Arial, sans-serif';
-      const timestamp = `SMI EVIDENCIA: ${new Date().toLocaleString()} - ${tipo.toUpperCase()}`;
+      const timestamp = `${marcaNombre.toUpperCase()} EVIDENCIA: ${new Date().toLocaleString()} - ${tipo.toUpperCase()}`;
       ctx.fillText(timestamp, 14, canvas.height - 13);
 
       const base64 = canvas.toDataURL('image/jpeg', 0.82);

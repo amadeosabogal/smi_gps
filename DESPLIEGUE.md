@@ -201,6 +201,18 @@ En **Historial de asistencia** (botón "Ver recorrido" de cada turno) y en **Per
 
 Pendiente para producción: subir el servidor con los endpoints nuevos (`/api/location/batch` y `/api/location/track-token`) y publicar el APK en una ruta del dominio.
 
+### Marca propia de una instalación (demostración o cliente nuevo)
+Cada instalación puede mostrar **su propio nombre** en lugar del logo de SMI. Sin configurar nada, todo sigue como siempre (logo y nombre de SMI).
+- **Web:** en `client/.env` pon `VITE_BRAND_NAME=Nombre de la marca` y compila (`npm run build:prod`). El nombre se muestra como texto en lugar del logo (ingreso, encabezados, pie), en el título de la pestaña, en el nombre de la app instalada y en las marcas de agua de las fotos.
+- **Servidor:** en `service/.env` pon `BRAND_NAME=Nombre de la marca` (sale en las alertas al celular) y reinicia con `pm2 restart`.
+- Quedan sin cambiar los **íconos** (favicon y el ícono de la app instalada), que siguen siendo los de SMI hasta que se agreguen los del cliente en `client/public`.
+- El **APK Android** lleva su nombre y su dirección fijos al compilarse: cada cliente necesita su propio APK.
+
+### Segunda instalación en el mismo servidor (demostración)
+Cada instalación va en su propia carpeta (`/var/www/<nombre>`), con su propio `.env`, **su propia base de datos** y un usuario de base de datos que solo accede a ella, su propio puerto y proceso de PM2, y su dirección en nginx con su certificado. Nunca se comparte la base ni las claves con otra instalación. Ejemplo hecho: `demo.woditek.com` -> carpeta `smi_gps_demo`, base `GPS_DEMO`, puerto 3011, proceso `demo-gps`.
+- Al pedir el certificado con `certbot --nginx`, si hay un bloque comodín (`*.dominio`) `certbot` puede instalar el certificado en ese bloque. El bloque de la instalación debe tener **su propio** `listen 443 ssl` con su certificado.
+- Para crear la base con datos de ejemplo se usa `node service/init-db.mjs --force-destroy-all-data` (**borra todo** lo que haya en la base del `.env`: comprobar siempre `DB_NAME`) y luego todas las migraciones en orden: `face-recognition photos security turnos historial dispositivo bateria almuerzo calendario push privacidad dni`.
+
 ### Ingreso del trabajador con DNI y contraseña
 El trabajador ya no busca su nombre en una lista: escribe su **DNI** y su **contraseña** (el mismo PIN de 4 a 6 dígitos de siempre). Así la pantalla de ingreso no muestra ningún nombre.
 - **Puesta en marcha (una vez):** `npm run migrate-dni` (añade `Usuarios.dni`, único; con `--dry-run` solo simula) y `pm2 restart smi-gps`.

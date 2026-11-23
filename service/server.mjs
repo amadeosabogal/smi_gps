@@ -2504,7 +2504,7 @@ app.post('/api/push/send', requireAuth(ROLES_STAFF), async (req, res) => {
       .query('SELECT id, endpoint, p256dh, auth FROM SuscripcionesPush WHERE usuario_id = @u')).recordset;
 
     const payload = JSON.stringify({
-      title: 'Alerta de SMI',
+      title: `Alerta de ${config.marcaNombre}`,
       body: mensaje,
       tag: 'smi-alerta',
       alertaId,
@@ -2793,7 +2793,7 @@ if (config.retencionFotosDias >= MINIMO_DIAS || config.retencionRegistrosDias >=
 }
 
 server.listen(config.port, '0.0.0.0', () => {
-  console.log(`🚀 Servidor SMI Asistencia & GPS corriendo en ${useTls ? 'https' : 'http'}://0.0.0.0:${config.port} (${isProduction ? 'producción' : 'desarrollo'})`);
+  console.log(`🚀 Servidor ${config.marcaNombre} Asistencia & GPS corriendo en ${useTls ? 'https' : 'http'}://0.0.0.0:${config.port} (${isProduction ? 'producción' : 'desarrollo'})`);
   if (isProduction && !useTls && !config.trustProxy) {
     console.warn('⚠️ Producción sin HTTPS: la cámara y el GPS del celular exigen HTTPS (usa SSL_KEY_PATH/SSL_CERT_PATH o un proxy inverso con TRUST_PROXY=1).');
   }

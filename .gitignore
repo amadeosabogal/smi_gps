@@ -33,3 +33,6 @@ service/.env
 documentos-privacidad/
 
 dnis.csv
+
+# Fotos de enrolamiento (datos biométricos): nunca al repositorio
+fotos-enrolamiento/

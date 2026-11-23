@@ -29,7 +29,7 @@ export async function exportarDatos(pool, usuarioId, { fotos = false } = {}) {
   return {
     generadoEn: new Date().toISOString(),
     incluyeFotos: Boolean(fotos),
-    nota: 'Copia de los datos personales que la aplicación SMI Asistencia GPS tiene de este trabajador. No incluye el PIN (se guarda cifrado e ilegible) ni la huella numérica del rostro.',
+    nota: 'Copia de los datos personales que la aplicación de asistencia tiene de este trabajador. No incluye el PIN (se guarda cifrado e ilegible) ni la huella numérica del rostro.',
     usuario: fotos ? usuario : sinFotos(usuario),
     asistencias: await q('RegistroAsistencia', 'SELECT * FROM RegistroAsistencia WHERE usuario_id = @u ORDER BY id'),
     almuerzos: await q('AlmuerzosTurno', 'SELECT * FROM AlmuerzosTurno WHERE usuario_id = @u ORDER BY id'),

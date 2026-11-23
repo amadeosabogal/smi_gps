@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { marcaNombre } from '../brand';
 import { CheckCircle2, AlertTriangle, RefreshCw, X, RotateCcw, Eye, ArrowLeft, ArrowRight } from 'lucide-react';
 import { faceRecognitionService } from '../services/faceRecognition';
 import { eyeBlinkService } from '../services/eyeBlink';
@@ -247,7 +248,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     ctx.fillRect(0, canvas.height - 30, canvas.width, 30);
     ctx.fillStyle = '#FFFFFF';
     ctx.font = 'bold 11px Archivo, sans-serif';
-    const timestamp = `SMI BIOMÉTRICO: ${worker.nombre} - ${new Date().toLocaleString()} [${tipo.toUpperCase()}]`;
+    const timestamp = `${marcaNombre.toUpperCase()} BIOMÉTRICO: ${worker.nombre} - ${new Date().toLocaleString()} [${tipo.toUpperCase()}]`;
     ctx.fillText(timestamp, 10, canvas.height - 10);
 
     return canvas.toDataURL('image/jpeg', 0.82);

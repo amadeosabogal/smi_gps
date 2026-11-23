@@ -63,6 +63,8 @@ export const config = {
   almuerzosPorTurno: Number(env.ALMUERZOS_POR_TURNO || 1),
   // Zona horaria con la que se decide qué día es "hoy" para el calendario de días no laborables
   zonaHoraria: env.BUSINESS_TZ || 'America/Lima',
+  // Nombre de la marca de esta instalación (alertas al celular, mensajes). Vacío = SMI. La web usa VITE_BRAND_NAME (client/.env).
+  marcaNombre: (env.BRAND_NAME || '').trim() || 'SMI',
   // true = el trabajador SOLO ingresa con DNI y contraseña: se apaga el ingreso antiguo por nombre y la lista pública de nombres.
   // Dejar en false mientras haya celulares con la app antigua o trabajadores sin DNI cargado.
   loginSoloDni: env.LOGIN_SOLO_DNI === 'true',

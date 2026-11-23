@@ -5,6 +5,7 @@ import { GoogleLiveMap } from '../components/GoogleLiveMap';
 import { StationPlacementPanel } from '../components/StationPlacementPanel';
 import { RouteHistoryModal } from '../components/RouteHistoryModal';
 import { CalendarioPanel } from '../components/CalendarioPanel';
+import { marcaNombre } from '../brand';
 import { GestionTrabajadorModal } from '../components/GestionTrabajadorModal';
 import { EnrolFaceModal } from '../components/EnrolFaceModal';
 import { AuthLayout } from '../components/AuthLayout';
@@ -666,7 +667,7 @@ export const AdminPage: React.FC = () => {
       const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `SMI_Asistencia_${logsDesde || 'inicio'}_${logsHasta || 'hoy'}.csv`;
+      link.download = `${marcaNombre.replace(/[^\w-]+/g, '_')}_Asistencia_${logsDesde || 'inicio'}_${logsHasta || 'hoy'}.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -2689,7 +2690,7 @@ export const AdminPage: React.FC = () => {
 
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-3 text-center text-xs text-slate-400 font-medium">
-        © {new Date().getFullYear()} SMI · Panel de control de asistencia
+        © {new Date().getFullYear()} {marcaNombre} · Panel de control de asistencia
       </footer>
     </div>
   );

@@ -1,12 +1,24 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import basicSsl from '@vitejs/plugin-basic-ssl'
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  // Marca de la instalación (client/.env -> VITE_BRAND_NAME). Vacía = SMI, como siempre.
+  const marca = (loadEnv(mode, process.cwd(), '').VITE_BRAND_NAME || '').trim()
+  return {
   plugins: [
     react(),
+    {
+      name: 'marca-html',
+      transformIndexHtml(html: string) {
+        if (!marca) return html
+        return html
+          .replace('<title>SMI - Control de Asistencia</title>', `<title>${marca} - Control de Asistencia</title>`)
+          .replace('en Tiempo Real SMI', `en Tiempo Real ${marca}`)
+      },
+    },
     basicSsl(),
     VitePWA({
       // 'prompt': la actualización no se aplica sola; <UpdatePrompt /> avisa y la persona decide cuándo
@@ -35,8 +47,8 @@ export default defineConfig({
         ],
       },
       manifest: {
-        name: 'SMI - Control de Asistencia',
-        short_name: 'SMI Asistencia',
+        name: marca ? `${marca} - Control de Asistencia` : 'SMI - Control de Asistencia',
+        short_name: marca ? marca.slice(0, 12) : 'SMI Asistencia',
         description: 'Registro de entrada y salida con geolocalización en estaciones de trabajo',
         theme_color: '#1c42ba',
         background_color: '#1c42ba',
@@ -83,4 +95,5 @@ export default defineConfig({
       },
     },
   }
+}
 })
