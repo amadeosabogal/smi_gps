@@ -265,7 +265,7 @@ public class TrackerService extends Service {
                 if (r.turnoTerminado) {
                     // El servidor cerró el turno (p. ej. salida forzada por un administrador) o es de otro dispositivo
                     String motivo = TrackerStore.get(this).getLastError();
-                    AlertNotifier.avisar(this, "SMI GPS",
+                    AlertNotifier.avisar(this, getString(R.string.marca_corta) + " GPS",
                             motivo != null && motivo.contains("otro dispositivo")
                                     ? "Su turno está activo en otro dispositivo: este teléfono dejó de registrar su ubicación."
                                     : "Su turno ha terminado: su ubicación ya no se registra.");
@@ -344,7 +344,7 @@ public class TrackerService extends Service {
         PendingIntent pi = abrir == null ? null
                 : PendingIntent.getActivity(this, 0, abrir, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("SMI GPS · Turno activo")
+                .setContentTitle(getString(R.string.marca_corta) + " GPS · Turno activo")
                 .setContentText(texto)
                 .setSmallIcon(android.R.drawable.ic_menu_mylocation)
                 .setOngoing(true)

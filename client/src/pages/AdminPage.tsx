@@ -178,6 +178,9 @@ export const AdminPage: React.FC = () => {
   const [newProyecto, setNewProyecto] = useState(''); // id del proyecto de la estación nueva ('' = sin proyecto)
   const [isSavingStation, setIsSavingStation] = useState(false);
 
+  // Plan de la instalación: máximo de trabajadores activos (limite null = sin límite)
+  const [plan, setPlan] = useState<{ limite: number | null; activos: number } | null>(null);
+
   // Proyectos que agrupan las estaciones
   const [proyectos, setProyectos] = useState<Proyecto[]>([]);
   const [filtroProyecto, setFiltroProyecto] = useState(''); // pestaña Estaciones: '' = todos, 'none' = sin proyecto, o id
@@ -313,14 +316,16 @@ export const AdminPage: React.FC = () => {
     if (heavyInFlight.current) return;
     heavyInFlight.current = true;
     try {
-      const [stationsData, usersData, fraudData, proyectosData] = await Promise.all([
+      const [stationsData, usersData, fraudData, proyectosData, planData] = await Promise.all([
         api.getWorkstations(),
         api.getUsers(),
         api.getFraudLogs(),
         api.getProyectos().catch(() => [] as Proyecto[]), // un servidor sin la función no debe romper el panel
+        api.getPlan().catch(() => null),
       ]);
       setWorkstations(stationsData);
       setProyectos(proyectosData);
+      setPlan(planData);
       setWorkersList(usersData);
       setFraudLogs(fraudData);
     } catch (err) {
@@ -1820,6 +1825,24 @@ export const AdminPage: React.FC = () => {
                     </p>
                   </div>
                   <div className="flex items-center space-x-2 flex-shrink-0">
+                    {plan && plan.limite && (
+                      <div
+                        title="Máximo de trabajadores activos de su plan. Para ampliarlo, contacte a su proveedor."
+                        className={`flex items-center space-x-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border ${
+                          plan.activos >= plan.limite
+                            ? 'bg-red-50 border-red-300 text-red-900'
+                            : plan.activos >= plan.limite * 0.9
+                              ? 'bg-amber-50 border-amber-300 text-amber-900'
+                              : 'bg-white border-blue-200 text-blue-900'
+                        }`}
+                      >
+                        <span>Plan:</span>
+                        <span className="font-bold">
+                          {plan.activos} / {plan.limite} activos
+                        </span>
+                        {plan.activos >= plan.limite && <span>· Completo</span>}
+                      </div>
+                    )}
                     <div className="flex items-center space-x-1.5 text-xs font-semibold text-blue-900 bg-white px-3 py-1.5 rounded-xl border border-blue-200">
                       <span>Enrolados:</span>
                       <span className="font-bold text-emerald-600">

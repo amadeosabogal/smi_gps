@@ -68,6 +68,12 @@ export const config = {
     const v = (env.SIN_SENAL_ALERTA_MIN ?? '').trim();
     return v === '' ? 5 : Number(v) || 0;
   })(),
+  // Plan de esta instalación: máximo de trabajadores ACTIVOS (los administradores y supervisores no cuentan; los dados de baja tampoco).
+  // Vacío o 0 = sin límite. Al llegar al máximo no se pueden dar de alta ni reactivar más trabajadores.
+  maxTrabajadores: (() => {
+    const n = Number.parseInt(String(env.MAX_TRABAJADORES ?? '').trim(), 10);
+    return Number.isInteger(n) && n > 0 ? n : 0;
+  })(),
   // Nombre de la marca de esta instalación (alertas al celular, mensajes). Vacío = SMI. La web usa VITE_BRAND_NAME (client/.env).
   marcaNombre: (env.BRAND_NAME || '').trim() || 'SMI',
   // true = el trabajador SOLO ingresa con DNI y contraseña: se apaga el ingreso antiguo por nombre y la lista pública de nombres.

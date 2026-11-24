@@ -328,6 +328,11 @@ export const api = {
     return request(`/users/${id}/baja`, { method: 'POST', body: JSON.stringify(opts) });
   },
 
+  /** Uso del plan: máximo de trabajadores activos (limite null = sin límite) y cuántos hay */
+  async getPlan(): Promise<{ limite: number | null; activos: number }> {
+    return request('/plan');
+  },
+
   async reactivarUser(id: number): Promise<void> {
     await request(`/users/${id}/reactivar`, { method: 'POST' });
   },

@@ -11,7 +11,13 @@ android {
     namespace = "pe.smi.gpstracker"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "pe.smi.gpstracker"
+        // Por instalación (SMI, demo, cliente): se cambian al compilar con -PappId=... -PappName=... -PappBrand=...
+        // Sin esos parámetros se compila la app de SMI, igual que siempre.
+        applicationId (project.findProperty('appId') ?: "pe.smi.gpstracker")
+        def appNombre = project.findProperty('appName') ?: "SMI GPS Asistencia"
+        resValue "string", "app_name", appNombre
+        resValue "string", "title_activity_main", appNombre
+        resValue "string", "marca_corta", (project.findProperty('appBrand') ?: "SMI")
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 8

@@ -1,7 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">SMI GPS Asistencia</string>
-    <string name="title_activity_main">SMI GPS Asistencia</string>
+    <!-- app_name, title_activity_main y marca_corta los define build.gradle (resValue): cambian por instalación (SMI, demo, cliente) -->
     <string name="package_name">pe.smi.gpstracker</string>
     <string name="custom_url_scheme">pe.smi.gpstracker</string>
 </resources>

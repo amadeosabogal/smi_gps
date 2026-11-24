@@ -103,7 +103,7 @@ final class AlertNotifier {
         PendingIntent pi = PendingIntent.getActivity(ctx, alertaId, abrir, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         Notification n = new NotificationCompat.Builder(ctx, CHANNEL_ID)
-                .setContentTitle("Alerta de SMI")
+                .setContentTitle("Alerta de " + ctx.getString(R.string.marca_corta))
                 .setContentText(mensaje)
                 .setStyle(new NotificationCompat.BigTextStyle().bigText(mensaje))
                 .setSmallIcon(android.R.drawable.ic_dialog_alert)

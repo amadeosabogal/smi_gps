@@ -11,7 +11,7 @@
 // Requisito: haber ejecutado antes  npm run migrate-dni
 import fs from 'fs';
 import sql from 'mssql';
-import { dbConfig } from './config.mjs';
+import { dbConfig, config } from './config.mjs';
 import { hashPinAsync } from './auth.mjs';
 import crypto from 'crypto';
 
@@ -78,6 +78,17 @@ try {
     plan.push({ ...f, correo });
   }
 
+  // Plan de la instalación (MAX_TRABAJADORES en service/.env): no se pasan del máximo de trabajadores activos
+  let excedePlan = false;
+  if (config.maxTrabajadores) {
+    const activos = (await pool.request().query("SELECT COUNT(*) AS n FROM Usuarios WHERE rol = 'trabajador' AND activo = 1")).recordset[0].n;
+    const libres = Math.max(0, config.maxTrabajadores - activos);
+    if (plan.length > libres) {
+      excedePlan = true;
+      problemas.push(`El plan permite ${config.maxTrabajadores} trabajadores activos, hay ${activos} y se quieren dar de alta ${plan.length} (caben ${libres}). No se da de alta a nadie: reduce el archivo, da de baja a alguien o amplía MAX_TRABAJADORES.`);
+    }
+  }
+
   console.log(`\n${aplicar ? '🔧 ALTAS' : '🔎 SIMULACIÓN (no se cambia nada)'} en [${dbConfig.database}]:`);
   for (const x of plan) console.log(`   ${x.dni}  ${x.nombre}  (${x.cargo})`);
   if (problemas.length) {
@@ -87,6 +98,9 @@ try {
 
   if (!aplicar) {
     console.log(`\n${plan.length} alta(s) lista(s). Para darlas de alta: node service/agregar-trabajadores.mjs --archivo=${archivo} --apply`);
+  } else if (excedePlan) {
+    console.log('\n❌ No se dio de alta a nadie (ver el problema del plan).');
+    process.exitCode = 1;
   } else if (!plan.length) {
     console.log('\nNada que dar de alta.');
   } else {

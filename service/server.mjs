@@ -1360,6 +1360,38 @@ app.get('/api/users', requireAuth(ROLES_STAFF), async (req, res) => {
   }
 });
 
+// ----- Plan de la instalación: máximo de trabajadores activos (MAX_TRABAJADORES; vacío = sin límite) -----
+
+async function contarTrabajadoresActivos(p) {
+  const r = await p.request().query("SELECT COUNT(*) AS n FROM Usuarios WHERE rol = 'trabajador' AND activo = 1");
+  return r.recordset[0].n;
+}
+
+// true = hay cupo. Si el plan está lleno responde 409 con un mensaje claro y devuelve false.
+async function hayCupo(p, res) {
+  const limite = config.maxTrabajadores;
+  if (!limite) return true;
+  const activos = await contarTrabajadoresActivos(p);
+  if (activos < limite) return true;
+  res.status(409).json({
+    error: `Su plan permite ${limite} trabajadores activos y ya tiene ${activos}. Dé de baja a alguno o contacte a su proveedor para ampliar el plan.`,
+    codigo: 'LIMITE_PLAN',
+    limite,
+    activos,
+  });
+  return false;
+}
+
+// Uso del plan, para mostrarlo en el panel (limite null = sin límite)
+app.get('/api/plan', requireAuth(ROLES_STAFF), async (req, res) => {
+  try {
+    const p = await getPool();
+    res.json({ limite: config.maxTrabajadores || null, activos: await contarTrabajadoresActivos(p) });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
 app.post('/api/users', requireAuth(ROLES_ADMIN), async (req, res) => {
   try {
     const { codigo_empleado, nombre, correo, cargo, telefono, pin, dni } = req.body || {};
@@ -1389,6 +1421,8 @@ app.post('/api/users', requireAuth(ROLES_ADMIN), async (req, res) => {
       const dup = await p.request().input('dni', sql.VarChar(12), documento).query('SELECT 1 AS ok FROM Usuarios WHERE dni = @dni');
       if (dup.recordset.length) return res.status(400).json({ error: 'Ya existe un usuario con ese DNI' });
     }
+
+    if (!(await hayCupo(p, res))) return;
 
     const email = correo || `${codigoFinal.toLowerCase()}@smi.pe`;
     // Si no se indica PIN, se genera uno aleatorio y se muestra UNA sola vez
@@ -1524,6 +1558,8 @@ app.post('/api/users/:id/reactivar', requireAuth(ROLES_ADMIN), async (req, res) 
     const u = await trabajadorParaGestion(req, res);
     if (!u) return;
     const p = await getPool();
+    // Reactivar a alguien que ya está activo no consume cupo; a uno dado de baja sí
+    if (!u.activo && !(await hayCupo(p, res))) return;
     await p.request().input('id', sql.Int, u.id).query('UPDATE Usuarios SET activo = 1 WHERE id = @id');
     olvidarUsuario(u.id);
     console.log(`🗂️ [DATOS] Admin ${req.user.id} reactivó al trabajador ${u.codigo_empleado}.`);
