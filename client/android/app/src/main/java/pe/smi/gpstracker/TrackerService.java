@@ -5,14 +5,18 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.location.Location;
+import android.location.LocationManager;
 import android.content.IntentFilter;
 import android.os.BatteryManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.IBinder;
 
 import androidx.core.app.NotificationCompat;
@@ -103,9 +107,94 @@ public class TrackerService extends Service {
 
         corriendo = true;
         pedirUbicaciones(store.getIntervalMs());
+        vigilarUbicacion();
         subir(); // vacía lo que haya quedado pendiente de antes
         return START_STICKY;
     }
+
+    // ---------------- Ubicación apagada por el trabajador ----------------
+
+    private static final long REVISION_MS = 10_000L;       // respaldo por si el sistema no avisa el cambio
+    private static final long REPETIR_AVISO_MS = 120_000L; // mientras siga apagada, se vuelve a avisar cada 2 min
+    private Handler vigia;
+    private BroadcastReceiver receptorUbicacion;
+    private long ultimoAvisoApagada = 0L;
+    private final Runnable revision = new Runnable() {
+        @Override
+        public void run() {
+            revisarUbicacion();
+            if (vigia != null && corriendo) vigia.postDelayed(this, REVISION_MS);
+        }
+    };
+
+    static boolean ubicacionActivada(Context ctx) {
+        try {
+            LocationManager lm = (LocationManager) ctx.getSystemService(Context.LOCATION_SERVICE);
+            return Build.VERSION.SDK_INT >= 28 ? lm.isLocationEnabled() : lm.isProviderEnabled(LocationManager.GPS_PROVIDER);
+        } catch (Exception e) {
+            return true; // ante la duda no se acusa al trabajador
+        }
+    }
+
+    /** Detecta al instante (aviso del sistema) y por revisión periódica si la ubicación del celular se apaga o se enciende. */
+    private void vigilarUbicacion() {
+        if (vigia == null) vigia = new Handler(Looper.getMainLooper());
+        if (receptorUbicacion == null) {
+            receptorUbicacion = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    revisarUbicacion();
+                }
+            };
+            try {
+                IntentFilter f = new IntentFilter(LocationManager.MODE_CHANGED_ACTION);
+                f.addAction(LocationManager.PROVIDERS_CHANGED_ACTION);
+                ContextCompat.registerReceiver(this, receptorUbicacion, f, ContextCompat.RECEIVER_NOT_EXPORTED);
+            } catch (Exception e) {
+                receptorUbicacion = null; // queda la revisión periódica
+            }
+        }
+        vigia.removeCallbacks(revision);
+        vigia.post(revision);
+    }
+
+    private void dejarDeVigilarUbicacion() {
+        if (vigia != null) vigia.removeCallbacks(revision);
+        if (receptorUbicacion != null) {
+            try { unregisterReceiver(receptorUbicacion); } catch (Exception ignore) {}
+            receptorUbicacion = null;
+        }
+    }
+
+    private synchronized void revisarUbicacion() {
+        TrackerStore store = TrackerStore.get(this);
+        if (!store.isActive()) return;
+        boolean activada = ubicacionActivada(this);
+        long desde = store.getGpsApagadoDesde();
+        long ahora = System.currentTimeMillis();
+
+        if (!activada && desde == 0) {
+            store.setGpsApagadoDesde(ahora);
+            store.agregarEvento("apagado", ahora, 0);
+            ultimoAvisoApagada = ahora;
+            AlertNotifier.ubicacionApagada(this);
+            actualizarNotificacion(TEXTO_UBICACION_APAGADA);
+            subir(); // el aviso al supervisor sale de inmediato si hay internet
+        } else if (!activada) {
+            if (ahora - ultimoAvisoApagada >= REPETIR_AVISO_MS) {
+                ultimoAvisoApagada = ahora;
+                AlertNotifier.ubicacionApagada(this);
+            }
+        } else if (desde > 0) {
+            store.setGpsApagadoDesde(0);
+            store.agregarEvento("encendido", ahora, desde);
+            AlertNotifier.ubicacionReactivada(this);
+            actualizarNotificacion("Registrando su ubicación durante el turno");
+            subir();
+        }
+    }
+
+    private static final String TEXTO_UBICACION_APAGADA = "UBICACIÓN APAGADA: actívela de inmediato";
 
     private void pedirUbicaciones(long intervaloMs) {
         if (callback != null) return; // ya está pidiendo
@@ -184,7 +273,9 @@ public class TrackerService extends Service {
                     stopSelf();
                     return;
                 }
-                if (r.tokenInvalido) {
+                if (TrackerStore.get(this).getGpsApagadoDesde() > 0) {
+                    actualizarNotificacion(TEXTO_UBICACION_APAGADA);
+                } else if (r.tokenInvalido) {
                     actualizarNotificacion("Abra la aplicación para renovar el rastreo");
                 } else if (r.pendientes > 3) {
                     actualizarNotificacion("Sin conexión: " + r.pendientes + " puntos por enviar");
@@ -199,6 +290,8 @@ public class TrackerService extends Service {
 
     private void apagar() {
         corriendo = false;
+        dejarDeVigilarUbicacion();
+        AlertNotifier.ubicacionReactivada(this);
         try {
             if (fused != null && callback != null) fused.removeLocationUpdates(callback);
         } catch (Exception ignore) {}
@@ -219,6 +312,7 @@ public class TrackerService extends Service {
     @Override
     public void onDestroy() {
         corriendo = false;
+        dejarDeVigilarUbicacion();
         try {
             if (fused != null && callback != null) fused.removeLocationUpdates(callback);
         } catch (Exception ignore) {}

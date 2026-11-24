@@ -101,7 +101,7 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
             titulo="Ubicación del teléfono encendida"
             detalle="Active la ubicación (GPS) desde el panel de ajustes rápidos o en Ajustes → Ubicación."
             boton="Abrir ajustes"
-            onClick={() => ejecutar(() => nativeTracker.abrirAjustes())}
+            onClick={() => ejecutar(() => nativeTracker.abrirAjustesUbicacion())}
           />
           <Paso
             ok={p.ubicacionPrecisa}

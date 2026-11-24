@@ -63,6 +63,11 @@ export const config = {
   almuerzosPorTurno: Number(env.ALMUERZOS_POR_TURNO || 1),
   // Zona horaria con la que se decide qué día es "hoy" para el calendario de días no laborables
   zonaHoraria: env.BUSINESS_TZ || 'America/Lima',
+  // Minutos sin recibir ubicación de un trabajador en turno antes de avisar al administrador (mínimo 2; 0 = no avisar)
+  sinSenalAlertaMin: (() => {
+    const v = (env.SIN_SENAL_ALERTA_MIN ?? '').trim();
+    return v === '' ? 5 : Number(v) || 0;
+  })(),
   // Nombre de la marca de esta instalación (alertas al celular, mensajes). Vacío = SMI. La web usa VITE_BRAND_NAME (client/.env).
   marcaNombre: (env.BRAND_NAME || '').trim() || 'SMI',
   // true = el trabajador SOLO ingresa con DNI y contraseña: se apaga el ingreso antiguo por nombre y la lista pública de nombres.

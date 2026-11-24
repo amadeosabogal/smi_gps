@@ -23,9 +23,20 @@ export interface EstacionTrabajo {
   color: string;
   descripcion?: string;
   activo: boolean;
+  proyecto_id?: number | null; // proyecto al que pertenece (null = sin proyecto)
+}
+
+// Agrupa estaciones (por ejemplo "Metro de Lima")
+export interface Proyecto {
+  id: number;
+  codigo: string;
+  nombre: string;
+  color: string;
+  total_estaciones?: number;
 }
 
 export interface RegistroAsistencia {
+  proyecto_nombre?: string | null; // proyecto de la estación de ingreso
   id: number;
   usuario_id: number;
   nombre_usuario?: string;

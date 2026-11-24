@@ -156,6 +156,17 @@ public class TrackerPlugin extends Plugin {
         abrirAjustesApp(call);
     }
 
+    /** Abre directamente los ajustes de ubicación del sistema (para volver a encender la ubicación). */
+    @PluginMethod
+    public void abrirAjustesUbicacion(PluginCall call) {
+        try {
+            getContext().startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            call.resolve();
+        } catch (Exception e) {
+            abrirAjustesApp(call);
+        }
+    }
+
     private void abrirAjustesApp(PluginCall call) {
         Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
                 .setData(Uri.fromParts("package", getContext().getPackageName(), null))

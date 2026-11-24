@@ -108,6 +108,20 @@ async function checkDniColumna() {
     console.warn('No se pudo comprobar la columna dni:', err.message);
   }
 }
+// Proyectos que agrupan las estaciones (se crean con: npm run migrate-proyectos). Sin la migración todo sigue como antes.
+let proyectosHabilitados = false;
+async function checkProyectos() {
+  try {
+    const p = await getPool();
+    const r = await p.request().query(
+      "SELECT OBJECT_ID('Proyectos', 'U') AS t, COL_LENGTH('EstacionesTrabajo', 'proyecto_id') AS c"
+    );
+    proyectosHabilitados = Boolean(r.recordset[0].t && r.recordset[0].c);
+    if (!proyectosHabilitados) console.warn('⚠️ Los proyectos de estaciones aún no están habilitados: ejecuta  npm run migrate-proyectos  y reinicia.');
+  } catch (err) {
+    console.warn('No se pudo comprobar la tabla Proyectos:', err.message);
+  }
+}
 // DNI (8 dígitos) o carnet de extranjería/pasaporte (8 a 12 letras y números), sin espacios ni guiones
 const normalizarDni = (v) => String(v ?? '').replace(/[\s.-]/g, '').toUpperCase();
 const dniValido = (v) => /^[A-Z0-9]{8,12}$/.test(v);
@@ -975,6 +989,123 @@ app.get('/api/workstations', requireAuth(), async (req, res) => {
   }
 });
 
+// ----------------- PROYECTOS (agrupan estaciones) -----------------
+
+const SIN_PROYECTOS = { error: 'Los proyectos aún no están habilitados en este servidor (falta ejecutar la migración).' };
+
+// Lista de proyectos activos. Sin la migración devuelve una lista vacía y todo funciona como antes.
+app.get('/api/proyectos', requireAuth(), async (req, res) => {
+  try {
+    if (!proyectosHabilitados) return res.json([]);
+    const p = await getPool();
+    const r = await p.request().query(`
+      SELECT pr.id, pr.codigo, pr.nombre, pr.color,
+             (SELECT COUNT(*) FROM EstacionesTrabajo e WHERE e.proyecto_id = pr.id AND e.activo = 1) AS total_estaciones
+        FROM Proyectos pr WHERE pr.activo = 1 ORDER BY pr.nombre ASC`);
+    res.json(r.recordset);
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+const COLOR_HEX = /^#[0-9a-fA-F]{6}$/;
+
+app.post('/api/proyectos', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    if (!proyectosHabilitados) return res.status(409).json(SIN_PROYECTOS);
+    const codigo = String(req.body?.codigo ?? '').trim().slice(0, 50);
+    const nombre = String(req.body?.nombre ?? '').trim().slice(0, 150);
+    const color = COLOR_HEX.test(String(req.body?.color ?? '')) ? req.body.color : '#3B82F6';
+    if (!codigo || !nombre) return res.status(400).json({ error: 'El código y el nombre del proyecto son obligatorios' });
+
+    const p = await getPool();
+    const dup = await p.request().input('codigo', sql.VarChar(50), codigo)
+      .query('SELECT 1 FROM Proyectos WHERE codigo = @codigo AND activo = 1');
+    if (dup.recordset.length) return res.status(409).json({ error: `Ya existe un proyecto con el código "${codigo}"` });
+
+    const r = await p.request()
+      .input('codigo', sql.VarChar(50), codigo)
+      .input('nombre', sql.NVarChar(150), nombre)
+      .input('color', sql.VarChar(20), color)
+      .query('INSERT INTO Proyectos (codigo, nombre, color) OUTPUT INSERTED.id, INSERTED.codigo, INSERTED.nombre, INSERTED.color VALUES (@codigo, @nombre, @color)');
+    console.log(`🗂️ [PROYECTO] ${req.user.id} creó el proyecto ${r.recordset[0].id} (${codigo} · ${nombre}).`);
+    res.status(201).json({ ...r.recordset[0], total_estaciones: 0 });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.put('/api/proyectos/:id', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    if (!proyectosHabilitados) return res.status(409).json(SIN_PROYECTOS);
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Solicitud inválida' });
+    const { codigo, nombre, color } = req.body || {};
+    if (codigo !== undefined && !String(codigo).trim()) return res.status(400).json({ error: 'El código no puede quedar vacío' });
+    if (nombre !== undefined && !String(nombre).trim()) return res.status(400).json({ error: 'El nombre no puede quedar vacío' });
+    if (color !== undefined && !COLOR_HEX.test(String(color))) return res.status(400).json({ error: 'Color inválido' });
+
+    const p = await getPool();
+    const actual = await p.request().input('id', sql.Int, id).query('SELECT * FROM Proyectos WHERE id = @id AND activo = 1');
+    if (!actual.recordset.length) return res.status(404).json({ error: 'Proyecto no encontrado' });
+    const antes = actual.recordset[0];
+    const nuevo = {
+      codigo: codigo !== undefined ? String(codigo).trim().slice(0, 50) : antes.codigo,
+      nombre: nombre !== undefined ? String(nombre).trim().slice(0, 150) : antes.nombre,
+      color: color !== undefined ? String(color) : antes.color,
+    };
+    if (nuevo.codigo !== antes.codigo) {
+      const dup = await p.request().input('id', sql.Int, id).input('codigo', sql.VarChar(50), nuevo.codigo)
+        .query('SELECT 1 FROM Proyectos WHERE codigo = @codigo AND activo = 1 AND id <> @id');
+      if (dup.recordset.length) return res.status(409).json({ error: `Ya existe un proyecto con el código "${nuevo.codigo}"` });
+    }
+    const r = await p.request()
+      .input('id', sql.Int, id)
+      .input('codigo', sql.VarChar(50), nuevo.codigo)
+      .input('nombre', sql.NVarChar(150), nuevo.nombre)
+      .input('color', sql.VarChar(20), nuevo.color)
+      .query(`UPDATE Proyectos SET codigo = @codigo, nombre = @nombre, color = @color
+              OUTPUT INSERTED.id, INSERTED.codigo, INSERTED.nombre, INSERTED.color WHERE id = @id`);
+    console.log(`✏️ [PROYECTO] ${req.user.id} editó el proyecto ${id} (${antes.nombre} → ${nuevo.nombre}).`);
+    res.json(r.recordset[0]);
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Eliminar un proyecto (baja lógica). Si todavía tiene estaciones, hay que moverlas o eliminarlas antes.
+app.delete('/api/proyectos/:id', requireAuth(ROLES_ADMIN), async (req, res) => {
+  try {
+    if (!proyectosHabilitados) return res.status(409).json(SIN_PROYECTOS);
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Solicitud inválida' });
+    const p = await getPool();
+    const pr = await p.request().input('id', sql.Int, id).query('SELECT codigo, nombre FROM Proyectos WHERE id = @id AND activo = 1');
+    if (!pr.recordset.length) return res.status(404).json({ error: 'Proyecto no encontrado' });
+    const n = (await p.request().input('id', sql.Int, id)
+      .query('SELECT COUNT(*) AS n FROM EstacionesTrabajo WHERE proyecto_id = @id AND activo = 1')).recordset[0].n;
+    if (n > 0) {
+      return res.status(409).json({ error: `El proyecto tiene ${n} estación(es). Muévelas a otro proyecto o elimínalas antes de borrarlo.` });
+    }
+    const sufijo = `~del${id}`;
+    const codigoNuevo = `${String(pr.recordset[0].codigo).slice(0, 50 - sufijo.length)}${sufijo}`;
+    await p.request().input('id', sql.Int, id).input('codigo', sql.VarChar(50), codigoNuevo)
+      .query('UPDATE Proyectos SET activo = 0, codigo = @codigo WHERE id = @id');
+    console.log(`🗑️ [PROYECTO] ${req.user.id} eliminó el proyecto ${id} (${pr.recordset[0].codigo} · ${pr.recordset[0].nombre}).`);
+    res.json({ exito: true, id });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Comprueba que el proyecto indicado exista (null/undefined = sin proyecto)
+async function proyectoExiste(p, proyectoId) {
+  if (proyectoId === null || proyectoId === undefined) return true;
+  if (!Number.isInteger(proyectoId) || proyectoId <= 0) return false;
+  const r = await p.request().input('id', sql.Int, proyectoId).query('SELECT 1 AS ok FROM Proyectos WHERE id = @id AND activo = 1');
+  return r.recordset.length > 0;
+}
+
 const MAPS_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl', 'www.google.com', 'google.com', 'maps.google.com']);
 
 // Parser de enlaces de Google Maps (solo dominios de Google, para evitar SSRF)
@@ -1063,7 +1194,10 @@ app.post('/api/workstations', requireAuth(ROLES_ADMIN), async (req, res) => {
     const radio = isNum(radio_metros) && radio_metros > 0 && radio_metros <= 5000 ? radio_metros : 50.0;
 
     const p = await getPool();
+    const proyectoId = proyectosHabilitados && req.body?.proyecto_id != null ? req.body.proyecto_id : null;
+    if (!(await proyectoExiste(p, proyectoId))) return res.status(400).json({ error: 'El proyecto indicado no existe' });
     const result = await p.request()
+      .input('proyectoId', sql.Int, proyectoId)
       .input('codigo', sql.VarChar(50), String(codigo).slice(0, 50))
       .input('nombre', sql.NVarChar(150), String(nombre).slice(0, 150))
       .input('latitud', sql.Float, latitud)
@@ -1072,9 +1206,9 @@ app.post('/api/workstations', requireAuth(ROLES_ADMIN), async (req, res) => {
       .input('color', sql.VarChar(20), String(color || '#3B82F6').slice(0, 20))
       .input('descripcion', sql.NVarChar(255), String(descripcion || '').slice(0, 255))
       .query(`
-        INSERT INTO EstacionesTrabajo (codigo, nombre, latitud, longitud, radio_metros, color, descripcion)
+        INSERT INTO EstacionesTrabajo (codigo, nombre, latitud, longitud, radio_metros, color, descripcion${proyectosHabilitados ? ', proyecto_id' : ''})
         OUTPUT INSERTED.*
-        VALUES (@codigo, @nombre, @latitud, @longitud, @radio, @color, @descripcion);
+        VALUES (@codigo, @nombre, @latitud, @longitud, @radio, @color, @descripcion${proyectosHabilitados ? ', @proyectoId' : ''});
       `);
 
     const nuevaEstacion = result.recordset[0];
@@ -1109,6 +1243,13 @@ app.put('/api/workstations/:id', requireAuth(ROLES_ADMIN), async (req, res) => {
     if (!actual.recordset.length) return res.status(404).json({ error: 'Estación no encontrada' });
     const antes = actual.recordset[0];
 
+    // proyecto_id: un número lo asigna, null lo deja "sin proyecto", si no viene no se toca
+    const cambiaProyecto = proyectosHabilitados && req.body && req.body.proyecto_id !== undefined;
+    const proyectoNuevo = cambiaProyecto ? req.body.proyecto_id : null;
+    if (cambiaProyecto && !(await proyectoExiste(p, proyectoNuevo))) {
+      return res.status(400).json({ error: 'El proyecto indicado no existe' });
+    }
+
     const nuevo = {
       codigo: codigo !== undefined ? String(codigo).trim().slice(0, 50) : antes.codigo,
       nombre: nombre !== undefined ? String(nombre).trim().slice(0, 150) : antes.nombre,
@@ -1134,10 +1275,12 @@ app.put('/api/workstations/:id', requireAuth(ROLES_ADMIN), async (req, res) => {
       .input('radio', sql.Float, nuevo.radio)
       .input('color', sql.VarChar(20), nuevo.color)
       .input('descripcion', sql.NVarChar(255), nuevo.descripcion)
+      .input('proyectoId', sql.Int, proyectoNuevo)
       .query(`
         UPDATE EstacionesTrabajo
         SET codigo = @codigo, nombre = @nombre, latitud = @latitud, longitud = @longitud,
             radio_metros = @radio, color = @color, descripcion = @descripcion
+            ${cambiaProyecto ? ', proyecto_id = @proyectoId' : ''}
         OUTPUT INSERTED.*
         WHERE id = @id AND activo = 1;
       `);
@@ -1154,6 +1297,7 @@ app.put('/api/workstations/:id', requireAuth(ROLES_ADMIN), async (req, res) => {
     if (antes.latitud !== estacion.latitud || antes.longitud !== estacion.longitud) cambios.push('ubicación');
     if (antes.color !== estacion.color) cambios.push('color');
     if ((antes.descripcion || '') !== (estacion.descripcion || '')) cambios.push('descripción');
+    if (cambiaProyecto && (antes.proyecto_id ?? null) !== (estacion.proyecto_id ?? null)) cambios.push(`proyecto: ${antes.proyecto_id ?? 'ninguno'} → ${estacion.proyecto_id ?? 'ninguno'}`);
     console.log(`✏️ [ESTACIÓN] ${req.user.id} editó la estación ${id}: ${cambios.join('; ') || 'sin cambios'}.`);
 
     res.json(estacion);
@@ -1455,23 +1599,34 @@ app.post('/api/users/:id/reset-face', requireAuth(ROLES_ADMIN), async (req, res)
 
 // ----------------- BIOMETRÍA FACIAL (verificación en el servidor) -----------------
 
-async function registrarFraude({ usuarioId, tipoEvento, foto, similitud, notas }) {
+// segundosAtras: el hecho ocurrió antes de enterarnos (p. ej. el celular lo avisó al recuperar internet)
+async function registrarFraude({ usuarioId, tipoEvento, foto, similitud, notas, segundosAtras = 0 }) {
   try {
     const p = await getPool();
+    const seg = Number.isFinite(segundosAtras) && segundosAtras > 0 ? Math.round(segundosAtras) : 0;
     await p.request()
       .input('usuarioId', sql.Int, usuarioId)
       .input('tipo', sql.VarChar(50), tipoEvento)
       .input('foto', sql.NVarChar(sql.MAX), foto || null)
       .input('similitud', sql.Float, similitud || 0)
       .input('notas', sql.NVarChar(255), notas)
+      .input('seg', sql.Int, seg)
       .query(`
-        INSERT INTO AuditoriaFraudeFacial (usuario_id, tipo_evento, foto_intento_url, similitud_obtenida, notas)
-        VALUES (@usuarioId, @tipo, @foto, @similitud, @notas);
+        INSERT INTO AuditoriaFraudeFacial (usuario_id, tipo_evento, foto_intento_url, similitud_obtenida, notas, fecha_intento)
+        VALUES (@usuarioId, @tipo, @foto, @similitud, @notas, DATEADD(SECOND, -@seg, GETDATE()));
       `);
     console.warn(`🚨 [ALERTA DE FRAUDE] Usuario ${usuarioId}: ${tipoEvento} (${similitud}%).`);
-    emitStaff('fraud_alert', { usuarioId, tipoEvento, similitudObtenida: similitud, fecha: new Date().toISOString() });
+    emitStaff('fraud_alert', {
+      usuarioId,
+      tipoEvento,
+      similitudObtenida: similitud,
+      notas,
+      fecha: new Date(Date.now() - seg * 1000).toISOString(),
+    });
+    return true;
   } catch (err) {
     console.error('No se pudo registrar la auditoría de fraude:', err.message);
+    return false;
   }
 }
 
@@ -2224,6 +2379,121 @@ app.post('/api/location/batch', requireTrackAuth, async (req, res) => {
   }
 });
 
+// ----- Ubicación apagada / sin señal durante el turno -----
+// Hora local del negocio, p. ej. "14:05"
+const horaNegocio = (ms) =>
+  new Intl.DateTimeFormat('es-PE', { timeZone: config.zonaHoraria, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms));
+const textoDuracion = (seg) => (seg < 90 ? `${Math.max(1, Math.round(seg))} s` : `${Math.round(seg / 60)} min`);
+// usuarioId -> ms en que el celular avisó que el trabajador apagó la ubicación (se borra al volver a encenderla)
+const gpsApagadoDesde = new Map();
+const gpsEventosVistos = new Map(); // "usuario:tipo:t" -> ms (evita registrar dos veces un aviso reenviado)
+
+// El servicio nativo avisa cuando el trabajador apaga o vuelve a encender la ubicación del celular. Cada aviso trae su
+// hora real (puede llegar tarde si el celular estaba sin internet) y queda en la auditoría para el administrador.
+const GPS_EVENTOS_MAX = 20;
+app.post('/api/location/gps-evento', requireTrackAuth, async (req, res) => {
+  try {
+    const eventos = req.body?.eventos;
+    if (!Array.isArray(eventos) || eventos.length === 0 || eventos.length > GPS_EVENTOS_MAX) {
+      return res.status(400).json({ error: `Se esperan entre 1 y ${GPS_EVENTOS_MAX} eventos` });
+    }
+    const usuarioId = req.user.id;
+    const p = await getPool();
+    const turno = await turnoActivoDe(p, usuarioId);
+    if (!turno || turno.id !== req.trackAsistenciaId) {
+      return res.status(403).json({ error: 'El turno de este rastreo ya no está activo', codigo: 'SIN_TURNO' });
+    }
+    if (esOtroDispositivo(turno, req.trackDispositivo)) {
+      return res.status(403).json({ error: MSG_OTRO_DISPOSITIVO, codigo: 'OTRO_DISPOSITIVO' });
+    }
+    appNativaVista.set(usuarioId, Date.now());
+
+    const ahora = Date.now();
+    const validos = eventos
+      .filter((e) => e && (e.tipo === 'apagado' || e.tipo === 'encendido') && isNum(e.t) && e.t <= ahora + 60_000 && ahora - e.t <= BATCH_MAX_ANTIGUEDAD_MS)
+      .sort((a, b) => a.t - b.t);
+    for (const [k, t] of gpsEventosVistos) if (ahora - t > 24 * 3600 * 1000) gpsEventosVistos.delete(k);
+
+    let registrados = 0;
+    for (const ev of validos) {
+      const clave = `${usuarioId}:${ev.tipo}:${Math.round(ev.t)}`;
+      if (gpsEventosVistos.has(clave)) continue;
+      const seg = Math.max(0, Math.round((ahora - ev.t) / 1000));
+      let ok;
+      if (ev.tipo === 'apagado') {
+        ok = await registrarFraude({
+          usuarioId,
+          tipoEvento: 'GPS_APAGADO',
+          similitud: 0,
+          notas: `Apagó la ubicación del celular a las ${horaNegocio(ev.t)} durante el turno.`,
+          segundosAtras: seg,
+        });
+        if (ok) gpsApagadoDesde.set(usuarioId, ev.t);
+      } else {
+        const desde = isNum(ev.desde) && ev.desde < ev.t ? ev.desde : null;
+        ok = await registrarFraude({
+          usuarioId,
+          tipoEvento: 'GPS_REACTIVADO',
+          similitud: 0,
+          notas: desde
+            ? `Volvió a activar la ubicación a las ${horaNegocio(ev.t)}. Estuvo apagada ${textoDuracion((ev.t - desde) / 1000)} (desde las ${horaNegocio(desde)}).`
+            : `Volvió a activar la ubicación a las ${horaNegocio(ev.t)}.`,
+          segundosAtras: seg,
+        });
+        if (ok) gpsApagadoDesde.delete(usuarioId);
+      }
+      // Si no se pudo guardar, el celular conserva el aviso y lo reintenta
+      if (!ok) return res.status(500).json({ error: 'No se pudo registrar el evento' });
+      gpsEventosVistos.set(clave, ahora);
+      registrados++;
+    }
+    res.json({ exito: true, registrados });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Aviso al administrador cuando un trabajador en turno lleva SIN_SENAL_ALERTA_MIN minutos sin enviar ubicación
+// (sin internet, app cerrada, celular apagado o ubicación apagada sin conexión). Una sola alerta por interrupción.
+// Si el celular ya avisó que la ubicación está apagada, esa alerta ya existe y no se repite aquí.
+async function revisarSinSenal() {
+  const min = Math.round(config.sinSenalAlertaMin);
+  if (!(min >= 2)) return;
+  try {
+    const p = await getPool();
+    const r = await p.request().input('min', sql.Int, min).query(`
+      SELECT a.usuario_id, x.desde, DATEDIFF(SECOND, x.desde, GETDATE()) AS seg
+      FROM RegistroAsistencia a
+      LEFT JOIN UbicacionesEnVivo uv ON uv.usuario_id = a.usuario_id
+      CROSS APPLY (SELECT CASE WHEN uv.ultimo_ping > a.hora_ingreso THEN uv.ultimo_ping ELSE a.hora_ingreso END AS desde) x
+      WHERE a.estado = 'activo'
+        AND x.desde < DATEADD(MINUTE, -@min, GETDATE())
+        AND NOT EXISTS (
+          SELECT 1 FROM AuditoriaFraudeFacial f
+          WHERE f.usuario_id = a.usuario_id AND f.tipo_evento = 'SIN_SENAL_GPS' AND f.fecha_intento >= x.desde
+        )
+    `);
+    for (const fila of r.recordset) {
+      const apagado = gpsApagadoDesde.get(fila.usuario_id);
+      const inicio = Date.now() - fila.seg * 1000;
+      if (apagado && apagado >= inicio - 120_000) continue; // ya se avisó: apagó la ubicación
+      await registrarFraude({
+        usuarioId: fila.usuario_id,
+        tipoEvento: 'SIN_SENAL_GPS',
+        similitud: 0,
+        notas: `Sin recibir ubicación desde las ${horaNegocio(inicio)} (${textoDuracion(fila.seg)}). Posibles causas: sin internet, app cerrada, celular apagado o ubicación apagada sin conexión.`,
+      });
+    }
+    for (const [uid, t] of gpsApagadoDesde) if (Date.now() - t > 24 * 3600 * 1000) gpsApagadoDesde.delete(uid);
+  } catch (err) {
+    console.error('Error al revisar trabajadores sin señal:', err.message);
+  }
+}
+if (config.sinSenalAlertaMin > 0 && config.sinSenalAlertaMin < 2) {
+  console.warn('⚠️ SIN_SENAL_ALERTA_MIN debe ser al menos 2 minutos; el aviso de falta de señal queda desactivado.');
+}
+if (config.sinSenalAlertaMin >= 2) setInterval(revisarSinSenal, 60 * 1000).unref();
+
 app.post('/api/location/ping', requireAuth(ROLES_WORKER), async (req, res) => {
   try {
     const { latitud, longitud, precision, velocidad, rumbo, antiguedadMs } = req.body || {};
@@ -2331,16 +2601,24 @@ app.get('/api/attendance/logs', requireAuth(ROLES_STAFF), async (req, res) => {
     const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : '';
     const qLike = q ? `%${q.replace(/[\[\]%_]/g, (c) => `[${c}]`)}%` : null; // escapa los comodines de LIKE
 
+    // proyecto: solo asistencias cuya estación de ingreso pertenece a ese proyecto
+    const proyecto = proyectosHabilitados ? Number.parseInt(req.query.proyecto, 10) || null : null;
+
     const filtro = `
       WHERE (@desde IS NULL OR a.hora_ingreso >= @desde)
         AND (@hasta IS NULL OR a.hora_ingreso < @hasta)
-        AND (@q IS NULL OR u.nombre LIKE @q OR u.codigo_empleado LIKE @q)`;
-    const bind = (r) =>
+        AND (@q IS NULL OR u.nombre LIKE @q OR u.codigo_empleado LIKE @q)
+        ${proyecto ? 'AND eIng.proyecto_id = @proyecto' : ''}`;
+    const bind = (r) => {
       r.input('desde', sql.DateTime2, desde).input('hasta', sql.DateTime2, hasta).input('q', sql.NVarChar(120), qLike);
+      if (proyecto) r.input('proyecto', sql.Int, proyecto);
+      return r;
+    };
 
     const p = await getPool();
     const total = await bind(p.request()).query(
-      `SELECT COUNT(*) AS total FROM RegistroAsistencia a JOIN Usuarios u ON a.usuario_id = u.id ${filtro}`
+      `SELECT COUNT(*) AS total FROM RegistroAsistencia a JOIN Usuarios u ON a.usuario_id = u.id
+         LEFT JOIN EstacionesTrabajo eIng ON a.estacion_ingreso_id = eIng.id ${filtro}`
     );
     const result = await bind(p.request()).input('offset', sql.Int, offset).input('limit', sql.Int, limit).query(`
       SELECT
@@ -2352,6 +2630,7 @@ app.get('/api/attendance/logs', requireAuth(ROLES_STAFF), async (req, res) => {
         a.similitud_facial, a.verificacion_facial_exitosa,
         a.metodo_validacion, a.estado, a.horas_totales, a.notas,
         ${almuerzoTabla ? 'alm.id AS almuerzo_id, alm.inicio_en AS almuerzo_inicio, alm.fin_en AS almuerzo_fin,' : ''}
+        ${proyectosHabilitados ? '(SELECT pr.nombre FROM Proyectos pr WHERE pr.id = eIng.proyecto_id) AS proyecto_nombre,' : ''}
         eIng.nombre as estacion_ingreso_nombre, eSal.nombre as estacion_salida_nombre
       FROM RegistroAsistencia a
       JOIN Usuarios u ON a.usuario_id = u.id
@@ -2805,4 +3084,5 @@ server.listen(config.port, '0.0.0.0', () => {
   checkCalendarioTablas();
   checkPrivacidadTabla();
   checkDniColumna();
+  checkProyectos();
 });

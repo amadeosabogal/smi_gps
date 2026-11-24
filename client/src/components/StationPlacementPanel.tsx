@@ -11,6 +11,10 @@ interface Props {
   onRadio: (v: string) => void;
   color: string;
   onColor: (v: string) => void;
+  /** Proyectos disponibles (si no hay ninguno, el selector no se muestra) */
+  proyectos?: { id: number; nombre: string }[];
+  proyectoId?: string;
+  onProyecto?: (v: string) => void;
   /** Aviso si la nueva geocerca se cruza con otra estación (el sistema asigna al trabajador la estación más cercana) */
   aviso: string | null;
   guardando: boolean;
@@ -29,6 +33,9 @@ export const StationPlacementPanel: React.FC<Props> = ({
   onRadio,
   color,
   onColor,
+  proyectos = [],
+  proyectoId = '',
+  onProyecto,
   aviso,
   guardando,
   onGuardar,
@@ -72,6 +79,20 @@ export const StationPlacementPanel: React.FC<Props> = ({
             className="field"
           />
         </div>
+
+        {proyectos.length > 0 && onProyecto && (
+          <div className="sm:col-span-2">
+            <label className="field-label">Proyecto</label>
+            <select value={proyectoId} onChange={(e) => onProyecto(e.target.value)} className="field">
+              <option value="">Sin proyecto</option>
+              {proyectos.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.nombre}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <div className="sm:col-span-2">
           <label className="field-label">Radio de la geocerca: {radioValido ? `${Math.round(radioNum)} m` : '—'}</label>

@@ -2,6 +2,7 @@ import { getDeviceId } from './deviceId';
 import type {
   Usuario,
   EstacionTrabajo,
+  Proyecto,
   RegistroAsistencia,
   ResumenDashboard,
   DatosTrabajadorEnVivo,
@@ -269,6 +270,23 @@ export const api = {
     return request('/workstations', { method: 'POST', body: JSON.stringify(data) });
   },
 
+  // ----- Proyectos (agrupan estaciones) -----
+  async getProyectos(): Promise<Proyecto[]> {
+    return request('/proyectos');
+  },
+
+  async createProyecto(data: { codigo: string; nombre: string; color: string }): Promise<Proyecto> {
+    return request('/proyectos', { method: 'POST', body: JSON.stringify(data) });
+  },
+
+  async updateProyecto(id: number, data: { codigo?: string; nombre?: string; color?: string }): Promise<Proyecto> {
+    return request(`/proyectos/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  },
+
+  async deleteProyecto(id: number): Promise<{ exito: boolean; id: number }> {
+    return request(`/proyectos/${id}`, { method: 'DELETE' });
+  },
+
   // ----- Calendario de días no laborables -----
   /** Público: ¿hoy está bloqueada la app? (la pantalla de ingreso lo avisa) */
   async getCalendarioHoy(): Promise<EstadoDiaHoy> {
@@ -465,7 +483,7 @@ export const api = {
   // Historial de Asistencia
   /** Historial paginado. desde/hasta son fecha-hora ISO ("hasta" excluyente); q busca por nombre o código. */
   async getAttendanceLogs(
-    params: { desde?: string; hasta?: string; q?: string; limit?: number; offset?: number } = {}
+    params: { desde?: string; hasta?: string; q?: string; proyecto?: number; limit?: number; offset?: number } = {}
   ): Promise<{ items: RegistroAsistencia[]; total: number }> {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') qs.set(k, String(v));

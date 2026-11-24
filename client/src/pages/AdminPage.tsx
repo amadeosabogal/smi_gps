@@ -13,6 +13,7 @@ import { BrandLogo } from '../components/BrandLogo';
 import { AuthImage } from '../components/AuthImage';
 import type {
   EstacionTrabajo,
+  Proyecto,
   ResumenDashboard,
   DatosTrabajadorEnVivo,
   RegistroAsistencia,
@@ -51,8 +52,16 @@ const LOGS_PAGE_SIZE = 50;
 
 // Nombre legible de los tipos de evento de la auditoría
 const etiquetaEvento = (tipo: string) =>
-  ({ SUPLANTACION_ROSTRO: 'Suplantación de rostro', FALLA_PRUEBA_VIDA: 'Falla en la prueba de vida', INTENTO_DIA_NO_LABORABLE: 'Intento en día no laborable' } as Record<string, string>)[tipo] ||
-  tipo.charAt(0) + tipo.slice(1).toLowerCase().replace(/_/g, ' ');
+  ({
+    SUPLANTACION_ROSTRO: 'Suplantación de rostro',
+    FALLA_PRUEBA_VIDA: 'Falla en la prueba de vida',
+    INTENTO_DIA_NO_LABORABLE: 'Intento en día no laborable',
+    GPS_APAGADO: 'Apagó la ubicación (GPS)',
+    GPS_REACTIVADO: 'Reactivó la ubicación (GPS)',
+    SIN_SENAL_GPS: 'Sin señal GPS en turno',
+  } as Record<string, string>)[tipo] || tipo.charAt(0) + tipo.slice(1).toLowerCase().replace(/_/g, ' ');
+// Eventos que no son de reconocimiento facial: no tienen "similitud" que mostrar
+const EVENTOS_SIN_SIMILITUD = ['GPS_APAGADO', 'GPS_REACTIVADO', 'SIN_SENAL_GPS', 'INTENTO_DIA_NO_LABORABLE'];
 
 // Mensajes rápidos para las alertas al celular del trabajador
 const ALERT_PRESETS = [
@@ -166,11 +175,20 @@ export const AdminPage: React.FC = () => {
   const [newLng, setNewLng] = useState('-77.0427');
   const [newRadius, setNewRadius] = useState('50');
   const [newColor, setNewColor] = useState('#3B82F6');
+  const [newProyecto, setNewProyecto] = useState(''); // id del proyecto de la estación nueva ('' = sin proyecto)
   const [isSavingStation, setIsSavingStation] = useState(false);
+
+  // Proyectos que agrupan las estaciones
+  const [proyectos, setProyectos] = useState<Proyecto[]>([]);
+  const [filtroProyecto, setFiltroProyecto] = useState(''); // pestaña Estaciones: '' = todos, 'none' = sin proyecto, o id
+  const [plegados, setPlegados] = useState<Set<string>>(new Set()); // grupos de la pestaña Estaciones que están cerrados
+  const [proyectoForm, setProyectoForm] = useState<{ id: number | null; codigo: string; nombre: string; color: string } | null>(null);
+  const [isSavingProyecto, setIsSavingProyecto] = useState(false);
+  const [logsProyecto, setLogsProyecto] = useState(''); // historial de asistencia: '' = todos los proyectos
 
   // Editar una estación existente
   const [editStation, setEditStation] = useState<EstacionTrabajo | null>(null);
-  const [editForm, setEditForm] = useState({ codigo: '', nombre: '', descripcion: '', latitud: '', longitud: '', radio: '', color: '#3B82F6' });
+  const [editForm, setEditForm] = useState({ codigo: '', nombre: '', descripcion: '', latitud: '', longitud: '', radio: '', color: '#3B82F6', proyecto: '' });
   const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   // Recorrido de un turno (visor con mapa y reproducción)
@@ -295,12 +313,14 @@ export const AdminPage: React.FC = () => {
     if (heavyInFlight.current) return;
     heavyInFlight.current = true;
     try {
-      const [stationsData, usersData, fraudData] = await Promise.all([
+      const [stationsData, usersData, fraudData, proyectosData] = await Promise.all([
         api.getWorkstations(),
         api.getUsers(),
         api.getFraudLogs(),
+        api.getProyectos().catch(() => [] as Proyecto[]), // un servidor sin la función no debe romper el panel
       ]);
       setWorkstations(stationsData);
+      setProyectos(proyectosData);
       setWorkersList(usersData);
       setFraudLogs(fraudData);
     } catch (err) {
@@ -320,8 +340,8 @@ export const AdminPage: React.FC = () => {
       d.setDate(d.getDate() + 1); // "hasta" incluye todo ese día
       hasta = d.toISOString();
     }
-    return { desde, hasta, q: logsSearch || undefined };
-  }, [logsDesde, logsHasta, logsSearch]);
+    return { desde, hasta, q: logsSearch || undefined, proyecto: logsProyecto ? Number(logsProyecto) : undefined };
+  }, [logsDesde, logsHasta, logsSearch, logsProyecto]);
 
   // Historial de asistencia: solo la página que se está viendo
   const loadLogs = useCallback(async () => {
@@ -460,10 +480,19 @@ export const AdminPage: React.FC = () => {
       console.warn('Alerta de fraude facial recibida:', fraudEvent);
       scheduleHeavyReload();
       const ahora = new Date().toLocaleTimeString();
+      const nombre = liveWorkersRef.current.find((w) => w.usuario_id === fraudEvent?.usuarioId)?.nombre_usuario || 'Un trabajador';
+      const textos: Record<string, string> = {
+        GPS_APAGADO: `ALERTA: ${nombre} apagó la ubicación de su celular durante el turno (${ahora})`,
+        SIN_SENAL_GPS: `ALERTA: ${nombre} lleva varios minutos sin enviar ubicación (${ahora})`,
+        GPS_REACTIVADO: `${nombre} volvió a activar la ubicación de su celular (${ahora})`,
+        INTENTO_DIA_NO_LABORABLE: `ALERTA: ${nombre} intentó usar la app en un día no laborable (${ahora})`,
+      };
       setRecentNotification({
-        texto: `ALERTA: Intento de suplantación facial detectado (${
-          fraudEvent?.similitudObtenida ? Math.round(fraudEvent.similitudObtenida) + '%' : 'No coincide'
-        }) a las ${ahora}`,
+        texto:
+          textos[fraudEvent?.tipoEvento] ||
+          `ALERTA: Intento de suplantación facial detectado (${
+            fraudEvent?.similitudObtenida ? Math.round(fraudEvent.similitudObtenida) + '%' : 'No coincide'
+          }) a las ${ahora}`,
         fecha: ahora,
       });
     });
@@ -640,7 +669,7 @@ export const AdminPage: React.FC = () => {
 
       const q = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
       const headers = [
-        'ID', 'Código Empleado', 'Trabajador', 'Cargo', 'Hora Ingreso', 'Estación Ingreso', 'Hora Salida',
+        'ID', 'Código Empleado', 'Trabajador', 'Cargo', 'Hora Ingreso', 'Proyecto', 'Estación Ingreso', 'Hora Salida',
         'Estación Salida', 'Horas Totales', 'Almuerzo Inicio', 'Almuerzo Fin', 'Almuerzo (min)',
         'Similitud Facial', 'Biometría Exitosa', 'Método Validación', 'Estado',
       ];
@@ -650,6 +679,7 @@ export const AdminPage: React.FC = () => {
         q(log.nombre_usuario),
         q(log.cargo),
         q(log.hora_ingreso ? new Date(log.hora_ingreso).toLocaleString() : ''),
+        q(log.proyecto_nombre || ''),
         q(log.estacion_ingreso_nombre || 'Fuera de estación'),
         q(log.hora_salida ? new Date(log.hora_salida).toLocaleString() : 'En curso'),
         q(log.estacion_salida_nombre),
@@ -701,6 +731,7 @@ export const AdminPage: React.FC = () => {
     setNewName('');
     setNewRadius('50');
     setNewColor('#3B82F6');
+    setNewProyecto('');
     setColocando(true);
   };
 
@@ -743,6 +774,7 @@ export const AdminPage: React.FC = () => {
         longitud: puntoNuevo.lng,
         radio_metros: Math.round(Number(newRadius)) || 50,
         color: newColor,
+        proyecto_id: newProyecto ? Number(newProyecto) : null,
       });
       setColocando(false);
       setPuntoNuevo(null);
@@ -791,6 +823,7 @@ export const AdminPage: React.FC = () => {
       longitud: String(st.longitud),
       radio: String(st.radio_metros),
       color: st.color || '#3B82F6',
+      proyecto: st.proyecto_id ? String(st.proyecto_id) : '',
     });
   };
 
@@ -822,6 +855,7 @@ export const AdminPage: React.FC = () => {
         longitud: lng,
         radio_metros: radio,
         color: editForm.color,
+        proyecto_id: editForm.proyecto ? Number(editForm.proyecto) : null,
       });
       setWorkstations((prev) => prev.map((s) => (s.id === actualizada.id ? actualizada : s)));
       setEditStation(null);
@@ -850,6 +884,63 @@ export const AdminPage: React.FC = () => {
     }
   };
 
+  // --- Proyectos ---------------------------------------------------------------------------------
+  const abrirProyecto = (pr?: Proyecto) =>
+    setProyectoForm(pr ? { id: pr.id, codigo: pr.codigo, nombre: pr.nombre, color: pr.color } : { id: null, codigo: '', nombre: '', color: '#3B82F6' });
+
+  const handleGuardarProyecto = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!proyectoForm) return;
+    const codigo = proyectoForm.codigo.trim();
+    const nombre = proyectoForm.nombre.trim();
+    if (!codigo || !nombre) {
+      alert('El código y el nombre del proyecto son obligatorios');
+      return;
+    }
+    setIsSavingProyecto(true);
+    try {
+      if (proyectoForm.id === null) await api.createProyecto({ codigo, nombre, color: proyectoForm.color });
+      else await api.updateProyecto(proyectoForm.id, { codigo, nombre, color: proyectoForm.color });
+      setProyectoForm(null);
+      loadHeavy();
+    } catch (err: any) {
+      alert(err.message || 'No se pudo guardar el proyecto');
+    } finally {
+      setIsSavingProyecto(false);
+    }
+  };
+
+  const handleEliminarProyecto = async (pr: Proyecto) => {
+    if (!window.confirm(`¿Eliminar el proyecto "${pr.nombre}"?\n\nSolo se puede eliminar si no tiene estaciones.`)) return;
+    try {
+      await api.deleteProyecto(pr.id);
+      if (filtroProyecto === String(pr.id)) setFiltroProyecto('');
+      loadHeavy();
+    } catch (err: any) {
+      alert(err.message || 'No se pudo eliminar el proyecto');
+    }
+  };
+
+  const alternarPlegado = (clave: string) =>
+    setPlegados((prev) => {
+      const sig = new Set(prev);
+      if (sig.has(clave)) sig.delete(clave);
+      else sig.add(clave);
+      return sig;
+    });
+
+  // Grupos de la pestaña Estaciones: un grupo por proyecto (aunque esté vacío) y al final "Sin proyecto"
+  const gruposEstaciones: { clave: string; proyecto: Proyecto | null; estaciones: EstacionTrabajo[] }[] = (() => {
+    const grupos = proyectos.map((pr) => ({
+      clave: String(pr.id),
+      proyecto: pr as Proyecto | null,
+      estaciones: workstations.filter((w) => w.proyecto_id === pr.id),
+    }));
+    const sin = workstations.filter((w) => !w.proyecto_id || !proyectos.some((pr) => pr.id === w.proyecto_id));
+    if (sin.length > 0 || proyectos.length === 0) grupos.push({ clave: 'none', proyecto: null, estaciones: sin });
+    return filtroProyecto ? grupos.filter((g) => g.clave === filtroProyecto) : grupos;
+  })();
+
   // Create Workstation
   const handleCreateStation = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -866,6 +957,7 @@ export const AdminPage: React.FC = () => {
         longitud: parseFloat(newLng),
         radio_metros: parseFloat(newRadius) || 50,
         color: newColor,
+        proyecto_id: newProyecto ? Number(newProyecto) : null,
       });
       setShowNewStationModal(false);
       setNewCode('');
@@ -1121,10 +1213,22 @@ export const AdminPage: React.FC = () => {
                 )}
 
                 {activeTab === 'stations' && (
-                  <button onClick={() => setShowNewStationModal(true)} className="btn-primary whitespace-nowrap">
-                    <Plus className="h-4 w-4" />
-                    Nueva estación
-                  </button>
+                  <>
+                    <button onClick={() => abrirProyecto()} className="btn-secondary whitespace-nowrap">
+                      <Plus className="h-4 w-4" />
+                      Nuevo proyecto
+                    </button>
+                    <button
+                      onClick={() => {
+                        setNewProyecto(filtroProyecto && filtroProyecto !== 'none' ? filtroProyecto : '');
+                        setShowNewStationModal(true);
+                      }}
+                      className="btn-primary whitespace-nowrap"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Nueva estación
+                    </button>
+                  </>
                 )}
               </div>
             </div>
@@ -1157,6 +1261,9 @@ export const AdminPage: React.FC = () => {
                       onRadio={setNewRadius}
                       color={newColor}
                       onColor={setNewColor}
+                      proyectos={proyectos}
+                      proyectoId={newProyecto}
+                      onProyecto={setNewProyecto}
                       aviso={avisoSuperposicion}
                       guardando={isSavingStation}
                       onGuardar={guardarEstacionColocada}
@@ -1410,6 +1517,26 @@ export const AdminPage: React.FC = () => {
                       className="block mt-1 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
                   </label>
+                  {proyectos.length > 0 && (
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wide">
+                      Proyecto
+                      <select
+                        value={logsProyecto}
+                        onChange={(e) => {
+                          setLogsProyecto(e.target.value);
+                          setLogsPage(0);
+                        }}
+                        className="block mt-1 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                      >
+                        <option value="">Todos</option>
+                        {proyectos.map((pr) => (
+                          <option key={pr.id} value={pr.id}>
+                            {pr.nombre}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   <div className="flex flex-wrap gap-1.5">
                     {[
                       { label: 'Hoy', dias: 0 },
@@ -1490,6 +1617,7 @@ export const AdminPage: React.FC = () => {
                               <span className="font-medium text-blue-700">
                                 {log.estacion_ingreso_nombre || 'Fuera de estación'}
                               </span>
+                              {log.proyecto_nombre && <span className="block text-xs text-slate-500">{log.proyecto_nombre}</span>}
                             </td>
                             <td className="px-4 py-3 text-center">
                               {log.tiene_foto_ingreso ? (
@@ -1905,12 +2033,18 @@ export const AdminPage: React.FC = () => {
                                 </span>
                               </td>
                               <td className="px-4 py-3 text-center">
-                                <span className="font-bold text-xs text-rose-600 font-mono">
-                                  {log.similitud_obtenida !== null && log.similitud_obtenida !== undefined
-                                    ? `${Math.round(log.similitud_obtenida)}%`
-                                    : '0%'}
-                                </span>
-                                <p className="text-xs text-slate-400">Mínimo: 60%</p>
+                                {EVENTOS_SIN_SIMILITUD.includes(log.tipo_evento) ? (
+                                  <span className="text-xs text-slate-400">—</span>
+                                ) : (
+                                  <>
+                                    <span className="font-bold text-xs text-rose-600 font-mono">
+                                      {log.similitud_obtenida !== null && log.similitud_obtenida !== undefined
+                                        ? `${Math.round(log.similitud_obtenida)}%`
+                                        : '0%'}
+                                    </span>
+                                    <p className="text-xs text-slate-400">Mínimo: 60%</p>
+                                  </>
+                                )}
                               </td>
                               <td className="px-4 py-3 text-center">
                                 {log.tiene_foto_intento ? (
@@ -1975,59 +2109,147 @@ export const AdminPage: React.FC = () => {
 
             {/* Tab 3: Workstations Config */}
             {activeTab === 'stations' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {workstations.map((st) => (
-                  <div
-                    key={st.id}
-                    className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <span
-                          className="w-3.5 h-3.5 rounded-full inline-block"
-                          style={{ backgroundColor: st.color }}
-                        />
-                        <span className="text-xs font-mono font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
-                          {st.codigo}
-                        </span>
-                      </div>
-                      <h4 className="font-bold text-sm text-slate-900">{st.nombre}</h4>
-                      <p className="text-xs text-slate-500 mt-1">{st.descripcion || 'Sin descripción'}</p>
-                    </div>
-
-                    <div className="mt-4 pt-3 border-t border-slate-100 text-xs text-slate-600 space-y-1">
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Radio de Geocerca:</span>
-                        <span className="font-bold text-blue-600">{st.radio_metros} metros</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Coordenadas:</span>
-                        <span className="font-mono text-xs text-slate-700">
-                          {st.latitud.toFixed(4)}, {st.longitud.toFixed(4)}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => abrirEditarEstacion(st)}
-                        className="inline-flex items-center justify-center gap-1.5 border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        Editar
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteStation(st)}
-                        className="inline-flex items-center justify-center gap-1.5 border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-50"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        Eliminar
-                      </button>
-                    </div>
+              <div className="space-y-6">
+                {/* Filtro por proyecto (solo si ya hay proyectos creados) */}
+                {proyectos.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor="filtro-proyecto">
+                      Proyecto
+                    </label>
+                    <select
+                      id="filtro-proyecto"
+                      value={filtroProyecto}
+                      onChange={(e) => setFiltroProyecto(e.target.value)}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">Todos ({workstations.length})</option>
+                      {proyectos.map((pr) => (
+                        <option key={pr.id} value={pr.id}>
+                          {pr.nombre} ({workstations.filter((w) => w.proyecto_id === pr.id).length})
+                        </option>
+                      ))}
+                      <option value="none">Sin proyecto ({workstations.filter((w) => !w.proyecto_id).length})</option>
+                    </select>
                   </div>
-                ))}
+                )}
+
+                {gruposEstaciones.length === 0 && (
+                  <p className="text-sm text-slate-500">No hay estaciones para mostrar.</p>
+                )}
+
+                {gruposEstaciones.map((g) => {
+                  const cerrado = g.proyecto ? plegados.has(g.clave) : false;
+                  return (
+                    <section key={g.clave} className="space-y-3">
+                      {/* Encabezado del grupo: solo cuando existen proyectos */}
+                      {proyectos.length > 0 && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                          <button
+                            type="button"
+                            onClick={() => alternarPlegado(g.clave)}
+                            aria-expanded={!cerrado}
+                            className="flex items-center gap-2 text-left"
+                          >
+                            <span className="text-xs text-slate-500">{cerrado ? '▶' : '▼'}</span>
+                            <span
+                              className="inline-block h-3.5 w-3.5 rounded-sm"
+                              style={{ backgroundColor: g.proyecto ? g.proyecto.color : '#94a3b8' }}
+                            />
+                            <h3 className="text-sm font-bold text-slate-900">
+                              {g.proyecto ? g.proyecto.nombre : 'Sin proyecto'} ({g.estaciones.length})
+                            </h3>
+                            {g.proyecto && (
+                              <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs font-bold text-slate-600">
+                                {g.proyecto.codigo}
+                              </span>
+                            )}
+                          </button>
+                          {g.proyecto && (
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => abrirProyecto(g.proyecto!)}
+                                className="inline-flex items-center gap-1 border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                              >
+                                <Pencil className="h-3 w-3" />
+                                Editar proyecto
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleEliminarProyecto(g.proyecto!)}
+                                className="inline-flex items-center gap-1 border border-red-300 bg-white px-2.5 py-1 text-xs font-semibold text-red-800 hover:bg-red-50"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                                Eliminar proyecto
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {!cerrado && g.estaciones.length === 0 && (
+                        <p className="text-xs text-slate-500">Este proyecto todavía no tiene estaciones.</p>
+                      )}
+
+                      {!cerrado && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {g.estaciones.map((st) => (
+                            <div
+                              key={st.id}
+                              className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between"
+                            >
+                              <div>
+                                <div className="flex items-center justify-between mb-2">
+                                  <span
+                                    className="w-3.5 h-3.5 rounded-full inline-block"
+                                    style={{ backgroundColor: st.color }}
+                                  />
+                                  <span className="text-xs font-mono font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
+                                    {st.codigo}
+                                  </span>
+                                </div>
+                                <h4 className="font-bold text-sm text-slate-900">{st.nombre}</h4>
+                                <p className="text-xs text-slate-500 mt-1">{st.descripcion || 'Sin descripción'}</p>
+                              </div>
+
+                              <div className="mt-4 pt-3 border-t border-slate-100 text-xs text-slate-600 space-y-1">
+                                <div className="flex justify-between">
+                                  <span className="text-slate-400">Radio de Geocerca:</span>
+                                  <span className="font-bold text-blue-600">{st.radio_metros} metros</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-slate-400">Coordenadas:</span>
+                                  <span className="font-mono text-xs text-slate-700">
+                                    {st.latitud.toFixed(4)}, {st.longitud.toFixed(4)}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="mt-4 grid grid-cols-2 gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => abrirEditarEstacion(st)}
+                                  className="inline-flex items-center justify-center gap-1.5 border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                  Editar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteStation(st)}
+                                  className="inline-flex items-center justify-center gap-1.5 border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-50"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Eliminar
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  );
+                })}
               </div>
             )}
           </>
@@ -2063,6 +2285,23 @@ export const AdminPage: React.FC = () => {
                   className="field"
                 />
               </div>
+              {proyectos.length > 0 && (
+                <div>
+                  <label className="field-label">Proyecto:</label>
+                  <select
+                    value={editForm.proyecto}
+                    onChange={(e) => setEditForm({ ...editForm, proyecto: e.target.value })}
+                    className="field"
+                  >
+                    <option value="">Sin proyecto</option>
+                    {proyectos.map((pr) => (
+                      <option key={pr.id} value={pr.id}>
+                        {pr.nombre}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <label className="field-label">Descripción:</label>
                 <input
@@ -2125,6 +2364,62 @@ export const AdminPage: React.FC = () => {
                 </button>
                 <button type="submit" disabled={isSavingEdit} className="btn-primary">
                   {isSavingEdit ? 'Guardando…' : 'Guardar cambios'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Nuevo / Editar proyecto */}
+      {proyectoForm && (
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
+            <h3 className="font-bold text-lg text-slate-900 mb-1">
+              {proyectoForm.id === null ? 'Nuevo proyecto' : 'Editar proyecto'}
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Un proyecto agrupa estaciones, por ejemplo "Metro de Lima". Después elija el proyecto al crear o editar cada estación.
+            </p>
+            <form onSubmit={handleGuardarProyecto} className="space-y-3 text-xs">
+              <div>
+                <label className="field-label">Código (ej. METRO):</label>
+                <input
+                  type="text"
+                  required
+                  maxLength={50}
+                  value={proyectoForm.codigo}
+                  onChange={(e) => setProyectoForm({ ...proyectoForm, codigo: e.target.value })}
+                  className="field"
+                />
+              </div>
+              <div>
+                <label className="field-label">Nombre del proyecto:</label>
+                <input
+                  type="text"
+                  required
+                  maxLength={150}
+                  value={proyectoForm.nombre}
+                  onChange={(e) => setProyectoForm({ ...proyectoForm, nombre: e.target.value })}
+                  placeholder="ej. Metro de Lima"
+                  className="field"
+                />
+              </div>
+              <div>
+                <label className="field-label">Color identificador:</label>
+                <input
+                  type="color"
+                  value={proyectoForm.color}
+                  onChange={(e) => setProyectoForm({ ...proyectoForm, color: e.target.value })}
+                  className="field"
+                />
+              </div>
+              <div className="flex items-center justify-end space-x-2 pt-4">
+                <button type="button" onClick={() => setProyectoForm(null)} className="btn-secondary">
+                  Cancelar
+                </button>
+                <button type="submit" disabled={isSavingProyecto} className="btn-primary">
+                  {isSavingProyecto ? 'Guardando…' : 'Guardar proyecto'}
                 </button>
               </div>
             </form>
@@ -2215,6 +2510,20 @@ export const AdminPage: React.FC = () => {
                   className="field"
                 />
               </div>
+
+              {proyectos.length > 0 && (
+                <div>
+                  <label className="field-label">Proyecto:</label>
+                  <select value={newProyecto} onChange={(e) => setNewProyecto(e.target.value)} className="field">
+                    <option value="">Sin proyecto</option>
+                    {proyectos.map((pr) => (
+                      <option key={pr.id} value={pr.id}>
+                        {pr.nombre}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>

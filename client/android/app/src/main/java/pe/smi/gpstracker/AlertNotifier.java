@@ -36,6 +36,43 @@ final class AlertNotifier {
         }
     }
 
+    private static final int ID_UBICACION_APAGADA = 9002;
+
+    /**
+     * El trabajador apagó la ubicación del celular durante el turno: aviso fuerte (suena y vibra) que no se puede
+     * quitar deslizando y que lleva directo a los ajustes de ubicación. Se repite mientras siga apagada.
+     */
+    static void ubicacionApagada(Context ctx) {
+        asegurarCanal(ctx);
+        String texto = "Su ubicación está APAGADA durante el turno. Actívela ahora. Esto queda registrado y se informa a su supervisor.";
+        Intent ajustes = new Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        PendingIntent pi = PendingIntent.getActivity(ctx, ID_UBICACION_APAGADA, ajustes, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification n = new NotificationCompat.Builder(ctx, CHANNEL_ID)
+                .setContentTitle("Active su ubicación")
+                .setContentText(texto)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(texto))
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setDefaults(NotificationCompat.DEFAULT_SOUND | NotificationCompat.DEFAULT_VIBRATE)
+                .setOngoing(true)
+                .setOnlyAlertOnce(false)
+                .setContentIntent(pi)
+                .build();
+        try {
+            ((NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE)).notify(ID_UBICACION_APAGADA, n);
+        } catch (SecurityException ignore) {
+            // sin permiso de notificaciones: queda el texto de la notificación fija del servicio
+        }
+    }
+
+    static void ubicacionReactivada(Context ctx) {
+        try {
+            ((NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(ID_UBICACION_APAGADA);
+        } catch (Exception ignore) {}
+    }
+
     private static void asegurarCanal(Context ctx) {
         NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL_ID) == null) {

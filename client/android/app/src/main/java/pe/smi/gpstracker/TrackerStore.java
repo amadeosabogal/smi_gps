@@ -17,7 +17,7 @@ import java.util.List;
  */
 final class TrackerStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "smi_tracker.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 3;
     /** Máximo de puntos en cola (≈ 20 h a un punto cada 15 s). Si se excede, se descartan los más viejos. */
     static final int MAX_COLA = 5000;
 
@@ -39,6 +39,12 @@ final class TrackerStore extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE puntos (id INTEGER PRIMARY KEY AUTOINCREMENT, lat REAL NOT NULL, lng REAL NOT NULL, "
                 + "acc REAL NOT NULL, vel REAL, brg REAL, t INTEGER NOT NULL, sim INTEGER NOT NULL DEFAULT 0, "
                 + "bat INTEGER, chg INTEGER)");
+        crearTablaEventos(db);
+    }
+
+    private static void crearTablaEventos(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS eventos (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT NOT NULL, "
+                + "t INTEGER NOT NULL, desde INTEGER)");
     }
 
     @Override
@@ -48,6 +54,8 @@ final class TrackerStore extends SQLiteOpenHelper {
             db.execSQL("ALTER TABLE puntos ADD COLUMN bat INTEGER");
             db.execSQL("ALTER TABLE puntos ADD COLUMN chg INTEGER");
         }
+        // v3: avisos de "ubicación apagada / encendida" pendientes de enviar
+        if (oldVersion < 3) crearTablaEventos(db);
     }
 
     // ---------------- Configuración ----------------
@@ -88,6 +96,7 @@ final class TrackerStore extends SQLiteOpenHelper {
                 .putLong("intervalMs", intervalMs)
                 .putBoolean("tokenInvalido", false)
                 .remove("ultimoError")
+                .remove("gpsApagadoDesde")
                 .apply();
     }
 
@@ -178,5 +187,64 @@ final class TrackerStore extends SQLiteOpenHelper {
 
     synchronized void vaciarCola() {
         getWritableDatabase().delete("puntos", null, null);
+        getWritableDatabase().delete("eventos", null, null);
+        prefs.edit().remove("gpsApagadoDesde").apply();
+    }
+
+    // ---------------- Ubicación apagada / encendida ----------------
+
+    /** Momento (ms) en que se detectó la ubicación apagada; 0 = está encendida. */
+    long getGpsApagadoDesde() { return prefs.getLong("gpsApagadoDesde", 0L); }
+    void setGpsApagadoDesde(long t) {
+        if (t <= 0) prefs.edit().remove("gpsApagadoDesde").apply();
+        else prefs.edit().putLong("gpsApagadoDesde", t).apply();
+    }
+
+    static final class Evento {
+        long id;
+        String tipo; // "apagado" | "encendido"
+        long t;
+        long desde;  // solo en "encendido": cuándo se había apagado
+    }
+
+    synchronized void agregarEvento(String tipo, long t, long desde) {
+        SQLiteDatabase db = getWritableDatabase();
+        ContentValues v = new ContentValues();
+        v.put("tipo", tipo);
+        v.put("t", t);
+        if (desde > 0) v.put("desde", desde); else v.putNull("desde");
+        db.insert("eventos", null, v);
+        db.execSQL("DELETE FROM eventos WHERE id <= (SELECT MAX(id) FROM eventos) - 200");
+    }
+
+    synchronized List<Evento> primerosEventos(int limite) {
+        List<Evento> lista = new ArrayList<>();
+        Cursor c = getReadableDatabase().rawQuery("SELECT id, tipo, t, desde FROM eventos ORDER BY id ASC LIMIT " + limite, null);
+        try {
+            while (c.moveToNext()) {
+                Evento e = new Evento();
+                e.id = c.getLong(0);
+                e.tipo = c.getString(1);
+                e.t = c.getLong(2);
+                e.desde = c.isNull(3) ? 0 : c.getLong(3);
+                lista.add(e);
+            }
+        } finally {
+            c.close();
+        }
+        return lista;
+    }
+
+    synchronized void borrarEventosHasta(long maxId) {
+        getWritableDatabase().delete("eventos", "id <= ?", new String[]{String.valueOf(maxId)});
+    }
+
+    synchronized int eventosPendientes() {
+        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM eventos", null);
+        try {
+            return c.moveToFirst() ? c.getInt(0) : 0;
+        } finally {
+            c.close();
+        }
     }
 }

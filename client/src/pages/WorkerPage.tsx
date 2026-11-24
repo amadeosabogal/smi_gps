@@ -268,6 +268,7 @@ export const WorkerPage: React.FC = () => {
       checkShiftStatus();
       nativeTracker.estado().then(setEstadoNativo).catch(() => {});
     };
+    nativeTracker.estado().then(setEstadoNativo).catch(() => {});
     const id = setInterval(refrescar, 15_000);
     document.addEventListener('visibilitychange', refrescar);
     return () => {
@@ -275,6 +276,15 @@ export const WorkerPage: React.FC = () => {
       document.removeEventListener('visibilitychange', refrescar);
     };
   }, [isActiveShift, checkShiftStatus]);
+
+  // Si el trabajador apaga la ubicación del celular durante el turno, la pantalla se bloquea hasta que la reactive
+  // (el servicio nativo ya dejó el aviso en el celular y se lo informa al supervisor).
+  const ubicacionApagada = esAppNativa && isActiveShift && !!estadoNativo && !estadoNativo.permisos.ubicacionActivada;
+  useEffect(() => {
+    if (!ubicacionApagada) return;
+    const id = setInterval(() => nativeTracker.estado().then(setEstadoNativo).catch(() => {}), 3_000);
+    return () => clearInterval(id);
+  }, [ubicacionApagada]);
 
   // Reloj del almuerzo
   useEffect(() => {
@@ -1191,6 +1201,29 @@ export const WorkerPage: React.FC = () => {
           </section>
 
           {/* Estación y ubicación (solo con turno activo) */}
+          {ubicacionApagada && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/90 p-4" role="alertdialog" aria-modal="true">
+              <div className="w-full max-w-sm border-t-4 border-t-red-700 bg-white p-5 shadow-xl">
+                <div className="flex items-center gap-2 text-red-800">
+                  <AlertTriangle className="h-6 w-6 flex-shrink-0" />
+                  <h2 className="text-lg font-semibold">Active su ubicación</h2>
+                </div>
+                <p className="mt-2 text-sm text-slate-700">
+                  Apagó la ubicación del celular durante su turno. Mientras esté apagada no se registra su recorrido. Este
+                  aviso queda registrado y se informa a su supervisor.
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-primary mt-4 w-full py-3 text-base"
+                  onClick={() => nativeTracker.abrirAjustesUbicacion().catch(() => {})}
+                >
+                  Abrir ajustes de ubicación
+                </button>
+                <p className="mt-2 text-center text-xs text-slate-500">Esta pantalla se cierra sola al activarla.</p>
+              </div>
+            </div>
+          )}
+
           {isActiveShift && (
             <div className="space-y-4">
               {gpsImprecisa !== null && (

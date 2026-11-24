@@ -30,6 +30,7 @@
     "limpiar-pruebas": "node service/limpiar-pruebas.mjs",
     "migrate-dni": "node service/migrate-dni.mjs",
     "migrate-privacidad": "node service/migrate-privacidad.mjs",
+    "migrate-proyectos": "node service/migrate-proyectos.mjs",
     "purgar-vencidos": "node service/purgar-vencidos.mjs",
     "purge-historial": "node service/purge-historial.mjs",
     "vapid": "node service/generate-vapid.mjs",

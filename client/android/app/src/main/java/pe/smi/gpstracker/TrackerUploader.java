@@ -160,6 +160,10 @@ final class TrackerUploader {
                     break;
                 }
             }
+            // Avisos de "ubicación apagada / encendida": se envían aunque no haya puntos (sin GPS no hay puntos)
+            if (res.error == null && !res.sinConexion && !res.turnoTerminado && !res.tokenInvalido) {
+                enviarEventos(store, apiBase, token, res);
+            }
         } catch (Exception e) {
             res.error = "Error al enviar: " + e.getClass().getSimpleName();
             store.setLastError(res.error);
@@ -170,6 +174,58 @@ final class TrackerUploader {
         }
         res.pendientes = store.pendientes();
         return res;
+    }
+
+    /** Envía los avisos pendientes de ubicación apagada/encendida (POST /api/location/gps-evento). */
+    private static void enviarEventos(TrackerStore store, String apiBase, String token, Resultado res) throws Exception {
+        while (true) {
+            List<TrackerStore.Evento> eventos = store.primerosEventos(20);
+            if (eventos.isEmpty()) return;
+
+            JSONArray arr = new JSONArray();
+            for (TrackerStore.Evento e : eventos) {
+                JSONObject o = new JSONObject().put("tipo", e.tipo).put("t", e.t);
+                if (e.desde > 0) o.put("desde", e.desde);
+                arr.put(o);
+            }
+            long ultimoId = eventos.get(eventos.size() - 1).id;
+            byte[] bytes = new JSONObject().put("eventos", arr).toString().getBytes(StandardCharsets.UTF_8);
+
+            int codigo;
+            String respuesta;
+            HttpURLConnection c = null;
+            try {
+                c = (HttpURLConnection) new URL(apiBase + "/api/location/gps-evento").openConnection();
+                c.setRequestMethod("POST");
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(15000);
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                c.setRequestProperty("Authorization", "Bearer " + token);
+                c.setFixedLengthStreamingMode(bytes.length);
+                try (OutputStream os = c.getOutputStream()) { os.write(bytes); }
+                codigo = c.getResponseCode();
+                respuesta = leer(codigo >= 400 ? c.getErrorStream() : c.getInputStream());
+            } catch (Exception e) {
+                res.sinConexion = true; // se reintenta en el próximo ciclo; los avisos siguen guardados
+                return;
+            } finally {
+                if (c != null) c.disconnect();
+            }
+
+            if (codigo == 200 || codigo == 400) {
+                store.borrarEventosHasta(ultimoId);
+            } else if (codigo == 403 && (respuesta.contains("SIN_TURNO") || respuesta.contains("OTRO_DISPOSITIVO"))) {
+                store.borrarEventosHasta(ultimoId); // de otro turno: ya no sirven
+                return;
+            } else if (codigo == 401) {
+                store.setTokenInvalid(true);
+                res.tokenInvalido = true;
+                return;
+            } else {
+                return; // error del servidor: se reintenta luego
+            }
+        }
     }
 
     /** El servidor responde con las alertas del supervisor que aún no se mostraron: se muestran como notificación. */

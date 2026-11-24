@@ -37,6 +37,7 @@ interface SmiTrackerPlugin {
   pedirNotificaciones(): Promise<PermisosNativos>;
   pedirBateriaSinRestriccion(): Promise<void>;
   abrirAjustes(): Promise<void>;
+  abrirAjustesUbicacion(): Promise<void>;
   abrirAjustesFabricante(): Promise<{ abierto: boolean }>;
   iniciar(o: { apiBase: string; token: string; intervaloMs?: number }): Promise<EstadoRastreo>;
   actualizarToken(o: { token: string }): Promise<EstadoRastreo>;
@@ -82,6 +83,8 @@ export const nativeTracker = {
   pedirNotificaciones: () => requerido().pedirNotificaciones(),
   pedirBateria: () => requerido().pedirBateriaSinRestriccion(),
   abrirAjustes: () => requerido().abrirAjustes(),
+  /** Ajustes de ubicación del sistema: para volver a encender la ubicación del celular. */
+  abrirAjustesUbicacion: () => requerido().abrirAjustesUbicacion(),
   abrirAjustesFabricante: () => requerido().abrirAjustesFabricante(),
   /** Versión instalada de la app (versionCode y nombre). */
   async versionInstalada(): Promise<{ code: number; nombre: string }> {
