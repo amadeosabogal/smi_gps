@@ -1625,7 +1625,7 @@ export const AdminPage: React.FC = () => {
                                   type="button"
                                   onClick={() =>
                                     setPhotoPreview({
-                                      url: `/photos/attendance/${log.id}/in`,
+                                      url: `/photos/attendance/${log.id}/in?v=${Date.parse(log.hora_ingreso)}`,
                                       workerName: log.nombre_usuario,
                                       type: 'entrada',
                                       date: log.hora_ingreso,
@@ -1640,7 +1640,7 @@ export const AdminPage: React.FC = () => {
                                   className="inline-flex border border-slate-300 bg-white p-0.5 transition-colors hover:border-brand-600"
                                 >
                                   <AuthImage
-                                    path={`/photos/attendance/${log.id}/in`}
+                                    path={`/photos/attendance/${log.id}/in?v=${Date.parse(log.hora_ingreso)}`}
                                     alt="Foto Entrada"
                                     className="w-10 h-10 object-cover rounded-md"
                                   />
@@ -1676,7 +1676,7 @@ export const AdminPage: React.FC = () => {
                                   type="button"
                                   onClick={() =>
                                     setPhotoPreview({
-                                      url: `/photos/attendance/${log.id}/out`,
+                                      url: `/photos/attendance/${log.id}/out?v=${Date.parse(log.hora_ingreso)}-${Date.parse(log.hora_salida || '')}`,
                                       workerName: log.nombre_usuario,
                                       type: 'salida',
                                       date: log.hora_salida,
@@ -1691,7 +1691,7 @@ export const AdminPage: React.FC = () => {
                                   className="inline-flex border border-slate-300 bg-white p-0.5 transition-colors hover:border-brand-600"
                                 >
                                   <AuthImage
-                                    path={`/photos/attendance/${log.id}/out`}
+                                    path={`/photos/attendance/${log.id}/out?v=${Date.parse(log.hora_ingreso)}-${Date.parse(log.hora_salida || '')}`}
                                     alt="Foto Salida"
                                     className="w-10 h-10 object-cover rounded-md"
                                   />
@@ -2052,7 +2052,7 @@ export const AdminPage: React.FC = () => {
                                     type="button"
                                     onClick={() =>
                                       setPhotoPreview({
-                                        url: `/photos/fraud/${log.id}`,
+                                        url: `/photos/fraud/${log.id}?v=${Date.parse(log.fecha_intento)}`,
                                         workerName: log.nombre_usuario,
                                         type: 'entrada',
                                         date: log.fecha_intento,
@@ -2062,7 +2062,7 @@ export const AdminPage: React.FC = () => {
                                     className="inline-flex border border-slate-300 bg-white p-0.5 transition-colors hover:border-brand-600"
                                   >
                                     <AuthImage
-                                      path={`/photos/fraud/${log.id}`}
+                                      path={`/photos/fraud/${log.id}?v=${Date.parse(log.fecha_intento)}`}
                                       alt="Intento Fraudulento"
                                       className="w-10 h-10 object-cover rounded-md"
                                     />

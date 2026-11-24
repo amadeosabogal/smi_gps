@@ -437,13 +437,13 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
                         <div className="mt-1.5 flex gap-2">
                           {al.foto_inicio === 1 && (
                             <figure className="text-center">
-                              <AuthImage path={`/photos/lunch/${al.id}/in`} alt="Inicio del almuerzo" className="h-16 w-20 border border-slate-200 object-cover" />
+                              <AuthImage path={`/photos/lunch/${al.id}/in?v=${Date.parse(al.inicio_en)}`} alt="Inicio del almuerzo" className="h-16 w-20 border border-slate-200 object-cover" />
                               <figcaption className="text-[10px] text-slate-500">Inicio</figcaption>
                             </figure>
                           )}
                           {al.foto_fin === 1 && (
                             <figure className="text-center">
-                              <AuthImage path={`/photos/lunch/${al.id}/out`} alt="Fin del almuerzo" className="h-16 w-20 border border-slate-200 object-cover" />
+                              <AuthImage path={`/photos/lunch/${al.id}/out?v=${Date.parse(al.inicio_en)}-${al.fin_en ? Date.parse(al.fin_en) : ''}`} alt="Fin del almuerzo" className="h-16 w-20 border border-slate-200 object-cover" />
                               <figcaption className="text-[10px] text-slate-500">Fin</figcaption>
                             </figure>
                           )}
