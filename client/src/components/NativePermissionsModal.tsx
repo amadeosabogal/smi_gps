@@ -1,14 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, Circle } from 'lucide-react';
-import { bateriaObligatoria, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
+import { bateriaObligatoria, esAppIOS, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
 
 interface Props {
   onListo: () => void;
   onCancelar: () => void;
 }
 
-// Guía de permisos de la app Android. El rastreo con la pantalla apagada solo funciona si el trabajador
-// concede la ubicación "todo el tiempo" y la app no queda restringida por el ahorro de batería.
+// Guía de permisos de la app instalada. El rastreo con la pantalla apagada solo funciona si el trabajador
+// concede la ubicación "todo el tiempo" (iPhone: "Siempre") y, en Android, la app no queda restringida por la batería.
 export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar }) => {
   const [est, setEst] = useState<EstadoRastreo | null>(null);
   const [ocupado, setOcupado] = useState<boolean>(false);
@@ -16,7 +16,9 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
 
   const refrescar = useCallback(async () => {
     try {
-      setEst(await nativeTracker.estado());
+      const nuevo = await nativeTracker.estado();
+      // Si nada cambió no se vuelve a dibujar (evita perder un toque en pleno redibujado)
+      setEst((antes) => (JSON.stringify(antes) === JSON.stringify(nuevo) ? antes : nuevo));
     } catch {
       /* se reintenta al volver a la app */
     }
@@ -29,7 +31,12 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
       if (document.visibilityState === 'visible') refrescar();
     };
     document.addEventListener('visibilitychange', alVolver);
-    return () => document.removeEventListener('visibilitychange', alVolver);
+    // En iPhone las preguntas del sistema no ocultan la app (no hay visibilitychange): se revisa cada poco
+    const sondeo = esAppIOS ? setInterval(refrescar, 1500) : undefined;
+    return () => {
+      clearInterval(sondeo);
+      document.removeEventListener('visibilitychange', alVolver);
+    };
   }, [refrescar]);
 
   const ejecutar = async (accion: () => Promise<unknown>) => {
@@ -55,7 +62,8 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
 
   const p = est.permisos;
   const exigeBateria = bateriaObligatoria(est.fabricante);
-  const necesitaNotif = est.android >= 33;
+  // En iPhone las notificaciones se ofrecen, pero Apple no permite exigirlas
+  const necesitaNotif = esAppIOS || est.android >= 33;
   const listo = permisosCompletos(est);
 
   const Paso: React.FC<{
@@ -93,28 +101,41 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
         <p className="mt-1 text-sm text-slate-600">
           Para que su ubicación se registre con la pantalla apagada, la aplicación necesita estos permisos. Solo se
           configuran una vez.
+          {esAppIOS && ' Durante el turno no cierre la aplicación deslizándola hacia arriba.'}
         </p>
 
         <ul className="mt-3">
           <Paso
             ok={p.ubicacionActivada}
             titulo="Ubicación del teléfono encendida"
-            detalle="Active la ubicación (GPS) desde el panel de ajustes rápidos o en Ajustes → Ubicación."
+            detalle={
+              esAppIOS
+                ? 'Actívela en Ajustes → Privacidad y seguridad → Localización.'
+                : 'Active la ubicación (GPS) desde el panel de ajustes rápidos o en Ajustes → Ubicación.'
+            }
             boton="Abrir ajustes"
             onClick={() => ejecutar(() => nativeTracker.abrirAjustesUbicacion())}
           />
           <Paso
             ok={p.ubicacionPrecisa}
             titulo="Ubicación precisa"
-            detalle='Elija "Precisa" (no "Aproximada") y "Mientras la app está en uso".'
+            detalle={
+              esAppIOS
+                ? 'Elija "Permitir al usar la app" y deje activada la ubicación precisa.'
+                : 'Elija "Precisa" (no "Aproximada") y "Mientras la app está en uso".'
+            }
             boton="Permitir"
             onClick={() => ejecutar(() => nativeTracker.pedirUbicacion())}
           />
           <Paso
             ok={p.segundoPlano}
-            titulo='Ubicación "Permitir todo el tiempo"'
-            detalle='Es lo que permite seguir registrando con la pantalla apagada. En Ajustes → Permisos → Ubicación, marque "Permitir todo el tiempo".'
-            boton={p.ubicacionPrecisa ? 'Permitir todo el tiempo' : undefined}
+            titulo={esAppIOS ? 'Ubicación "Siempre"' : 'Ubicación "Permitir todo el tiempo"'}
+            detalle={
+              esAppIOS
+                ? 'Es lo que permite seguir registrando con la pantalla apagada. Si no aparece la pregunta, abra los ajustes de la aplicación → Ubicación y marque "Siempre".'
+                : 'Es lo que permite seguir registrando con la pantalla apagada. En Ajustes → Permisos → Ubicación, marque "Permitir todo el tiempo".'
+            }
+            boton={p.ubicacionPrecisa ? (esAppIOS ? 'Permitir siempre' : 'Permitir todo el tiempo') : undefined}
             onClick={() => ejecutar(() => nativeTracker.pedirSegundoPlano())}
           />
           {!p.segundoPlano && p.ubicacionPrecisa && (
@@ -128,23 +149,30 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
             <Paso
               ok={p.notificaciones}
               titulo="Notificaciones"
-              detalle="Se muestra un aviso fijo mientras su ubicación se registra, y le llegarán las alertas del supervisor."
+              detalle={
+                esAppIOS
+                  ? 'Le llegarán las alertas del supervisor y un aviso si el registro de su ubicación se detiene.'
+                  : 'Se muestra un aviso fijo mientras su ubicación se registra, y le llegarán las alertas del supervisor.'
+              }
+              recomendado={esAppIOS}
               boton="Permitir"
               onClick={() => ejecutar(() => nativeTracker.pedirNotificaciones())}
             />
           )}
-          <Paso
-            ok={p.bateriaSinRestriccion}
-            recomendado={!exigeBateria}
-            titulo="Batería sin restricciones"
-            detalle={
-              exigeBateria
-                ? `Su teléfono (${est.fabricante}) cierra las aplicaciones en segundo plano. Permita que esta aplicación no se restrinja o dejará de registrar su ubicación.`
-                : 'Evita que el sistema pause la aplicación para ahorrar batería durante el turno.'
-            }
-            boton="Quitar restricción"
-            onClick={() => ejecutar(() => nativeTracker.pedirBateria())}
-          />
+          {!esAppIOS && (
+            <Paso
+              ok={p.bateriaSinRestriccion}
+              recomendado={!exigeBateria}
+              titulo="Batería sin restricciones"
+              detalle={
+                exigeBateria
+                  ? `Su teléfono (${est.fabricante}) cierra las aplicaciones en segundo plano. Permita que esta aplicación no se restrinja o dejará de registrar su ubicación.`
+                  : 'Evita que el sistema pause la aplicación para ahorrar batería durante el turno.'
+              }
+              boton="Quitar restricción"
+              onClick={() => ejecutar(() => nativeTracker.pedirBateria())}
+            />
+          )}
           {(/xiaomi|redmi|poco|samsung/i.test(est.fabricante) || false) && (
             <li className="pb-1 pl-8">
               <p className="text-xs text-slate-600">

@@ -466,7 +466,7 @@ export const WorkerPage: React.FC = () => {
   // Durante el turno: mantener la pantalla encendida (el navegador deja de entregar el GPS con la pantalla
   // apagada o la app en segundo plano) y reportar la posición al instante cuando se vuelve a la app.
   useEffect(() => {
-    if (esAppNativa || !isActiveShift || !selectedUser || turnoEnOtroDispositivo) return; // en la app Android no hace falta mantener la pantalla encendida
+    if (esAppNativa || !isActiveShift || !selectedUser || turnoEnOtroDispositivo) return; // en la app instalada no hace falta mantener la pantalla encendida
     const usuarioId = selectedUser.id;
     let lock: WakeLockSentinel | null = null;
 
@@ -564,9 +564,10 @@ export const WorkerPage: React.FC = () => {
     // Si ya había dado permiso, se vuelve a registrar este celular en el servidor (sin preguntar nada)
     if (!esAppNativa) syncPush();
 
-    // App Android: las alertas llegan como notificación del sistema (las trae el servicio de rastreo).
+    // App instalada: las alertas llegan como notificación del sistema (las trae el rastreo nativo).
     // Al tocarla se abre la app con la alerta: se muestra completa y queda marcada como leída.
     let revisarAlertaNativa: (() => void) | null = null;
+    let dejarDeEscuchar: (() => void) | null = null;
     if (esAppNativa) {
       revisarAlertaNativa = async () => {
         if (document.visibilityState !== 'visible') return;
@@ -578,9 +579,11 @@ export const WorkerPage: React.FC = () => {
       };
       revisarAlertaNativa();
       document.addEventListener('visibilitychange', revisarAlertaNativa);
+      if (esAppIOS) dejarDeEscuchar = nativeTracker.alTocarAlerta(revisarAlertaNativa);
     }
 
     return () => {
+      dejarDeEscuchar?.();
       socket.off('alerta', onSocketAlert);
       navigator.serviceWorker?.removeEventListener('message', onSwMessage);
       if (revisarAlertaNativa) document.removeEventListener('visibilitychange', revisarAlertaNativa);
@@ -1046,7 +1049,7 @@ export const WorkerPage: React.FC = () => {
           </section>
 
           {/* Alertas del supervisor en el celular (push) */}
-          {!esAppNativa && !esAppIOS && <PushAlertCard />}
+          {!esAppNativa && <PushAlertCard />}
 
           {/* Ubicación (GPS) del celular */}
           {gpsPermissionStatus !== 'granted' ? (
@@ -1215,12 +1218,17 @@ export const WorkerPage: React.FC = () => {
                   Apagó la ubicación del celular durante su turno. Mientras esté apagada no se registra su recorrido. Este
                   aviso queda registrado y se informa a su supervisor.
                 </p>
+                {esAppIOS && (
+                  <p className="mt-2 text-sm text-slate-700">
+                    En Ajustes → Privacidad y seguridad → Localización, actívela y deje esta aplicación en «Siempre».
+                  </p>
+                )}
                 <button
                   type="button"
                   className="btn btn-primary mt-4 w-full py-3 text-base"
                   onClick={() => nativeTracker.abrirAjustesUbicacion().catch(() => {})}
                 >
-                  Abrir ajustes de ubicación
+                  {esAppIOS ? 'Abrir ajustes' : 'Abrir ajustes de ubicación'}
                 </button>
                 <p className="mt-2 text-center text-xs text-slate-500">Esta pantalla se cierra sola al activarla.</p>
               </div>
@@ -1272,8 +1280,9 @@ export const WorkerPage: React.FC = () => {
                     <>
                       <h3 className="text-sm font-semibold text-slate-900">Rastreo activo en segundo plano</h3>
                       <p className="mt-0.5 text-sm text-slate-600">
-                        Su ubicación se registra durante el turno aunque apague la pantalla o cierre esta aplicación. No
-                        desinstale ni detenga la aplicación hasta registrar su salida.
+                        {esAppIOS
+                          ? 'Su ubicación se registra durante el turno aunque apague la pantalla o use otras aplicaciones. No cierre esta aplicación deslizándola hacia arriba hasta registrar su salida.'
+                          : 'Su ubicación se registra durante el turno aunque apague la pantalla o cierre esta aplicación. No desinstale ni detenga la aplicación hasta registrar su salida.'}
                         {estadoNativo && estadoNativo.pendientes > 3
                           ? ` Sin conexión: ${estadoNativo.pendientes} puntos pendientes de enviar.`
                           : ''}

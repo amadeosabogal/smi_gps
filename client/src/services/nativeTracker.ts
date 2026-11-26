@@ -1,9 +1,9 @@
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 import { api, getApiOrigin } from './api';
 
-// Puente con el servicio nativo de Android (rastreo del turno con la pantalla apagada o la app cerrada).
-// En el navegador / PWA no existe: `esAppNativa` es false y no se usa nada de esto.
+// Puente con el rastreo nativo del turno (pantalla apagada o app en segundo plano): TrackerPlugin.java en Android
+// y TrackerPlugin.swift en iPhone. En el navegador / PWA no existe: `esAppNativa` es false y no se usa nada de esto.
 
 export interface PermisosNativos {
   ubicacionPrecisa: boolean;
@@ -46,15 +46,18 @@ interface SmiTrackerPlugin {
   estado(): Promise<EstadoRastreo>;
   alertaAbierta(): Promise<{ id?: number; mensaje?: string }>;
   abrirEnlace(o: { url: string }): Promise<void>;
+  /** Solo iPhone: el trabajador tocó la notificación de una alerta. */
+  addListener(evento: 'alertaTocada', accion: () => void): Promise<PluginListenerHandle>;
 }
 
-export const esAppNativa = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
-/** App instalada en iPhone: todavía no tiene rastreo nativo, pero tampoco es un navegador. */
+export const esAppAndroid = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
 export const esAppIOS = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios';
+/** App instalada (Android o iPhone): tiene rastreo nativo. */
+export const esAppNativa = esAppAndroid || esAppIOS;
 
 const plugin = esAppNativa ? registerPlugin<SmiTrackerPlugin>('SmiTracker') : null;
 const requerido = () => {
-  if (!plugin) throw new Error('El rastreo en segundo plano solo existe en la app Android');
+  if (!plugin) throw new Error('El rastreo en segundo plano solo existe en la aplicación instalada');
   return plugin;
 };
 
@@ -97,6 +100,13 @@ export const nativeTracker = {
   abrirEnlace: (url: string) => requerido().abrirEnlace({ url }),
   /** Alerta del supervisor cuyo aviso tocó el trabajador (se entrega una sola vez). */
   alertaAbierta: () => requerido().alertaAbierta(),
+  /** Avisa cuando se toca una alerta con la app ya abierta (iPhone). Devuelve cómo dejar de escuchar. */
+  alTocarAlerta(accion: () => void): () => void {
+    const escucha = requerido().addListener('alertaTocada', accion);
+    return () => {
+      escucha.then((e) => e.remove()).catch(() => {});
+    };
+  },
 
   /**
    * Deja el rastreo corriendo para el turno activo. Se puede llamar las veces que haga falta:

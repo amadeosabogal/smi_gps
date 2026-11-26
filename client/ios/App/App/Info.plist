@@ -24,6 +24,12 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>SMIMarcaCorta</key>
+	<string>SMI</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>La cámara verifica su rostro al registrar su asistencia y guarda una foto como evidencia.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
