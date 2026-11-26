@@ -11,7 +11,7 @@ import { PushAlertCard } from '../components/PushAlertCard';
 import { AuthLayout } from '../components/AuthLayout';
 import { BrandLogo } from '../components/BrandLogo';
 import { syncPush, releasePush } from '../services/push';
-import { esAppNativa, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
+import { esAppIOS, esAppNativa, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
 import { NativePermissionsModal } from '../components/NativePermissionsModal';
 import { DiaNoLaborable } from '../components/DiaNoLaborable';
 import { AvisoPrivacidad } from '../components/AvisoPrivacidad';
@@ -606,7 +606,8 @@ export const WorkerPage: React.FC = () => {
         setGpsErrorMsg(null);
       } else {
         setGpsPermissionStatus('denied');
-        alert('Debe conceder el permiso de ubicación en su navegador para que el sistema detecte en qué estación se encuentra.');
+        const donde = esAppIOS ? 'a esta aplicación (en Ajustes)' : 'en su navegador';
+        alert(`Debe conceder el permiso de ubicación ${donde} para que el sistema detecte en qué estación se encuentra.`);
       }
     } catch (err: any) {
       setGpsErrorMsg(err.message);
@@ -645,8 +646,10 @@ export const WorkerPage: React.FC = () => {
       if (!r.precise) {
         alert(
           `Su ubicación no es lo bastante precisa (±${Math.round(r.coords.accuracy)} m). Se requiere ±${maxPrec} m o menos.\n\n` +
-            '• Active la ubicación de alta precisión (Android: Ajustes → Ubicación).\n' +
-            '• Permita la ubicación "precisa" para el navegador, no la "aproximada".\n' +
+            (esAppIOS
+              ? '• En Ajustes, abra esta aplicación → Ubicación y active "Ubicación precisa".\n'
+              : '• Active la ubicación de alta precisión (Android: Ajustes → Ubicación).\n' +
+                '• Permita la ubicación "precisa" para el navegador, no la "aproximada".\n') +
             '• Salga a un lugar abierto, lejos de techos y paredes.\n\nLuego intente de nuevo.'
         );
         return false;
@@ -1043,7 +1046,7 @@ export const WorkerPage: React.FC = () => {
           </section>
 
           {/* Alertas del supervisor en el celular (push) */}
-          {!esAppNativa && <PushAlertCard />}
+          {!esAppNativa && !esAppIOS && <PushAlertCard />}
 
           {/* Ubicación (GPS) del celular */}
           {gpsPermissionStatus !== 'granted' ? (

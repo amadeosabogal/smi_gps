@@ -49,6 +49,8 @@ interface SmiTrackerPlugin {
 }
 
 export const esAppNativa = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+/** App instalada en iPhone: todavía no tiene rastreo nativo, pero tampoco es un navegador. */
+export const esAppIOS = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios';
 
 const plugin = esAppNativa ? registerPlugin<SmiTrackerPlugin>('SmiTracker') : null;
 const requerido = () => {
