@@ -21,6 +21,11 @@ const MENSAJES_NATIVOS: Record<string, string> = {
 const errorNativo = (err: any): Error =>
   new Error(MENSAJES_NATIVOS[err?.code] || 'No se pudo obtener la ubicación GPS. Intente de nuevo.');
 
+// En iPhone la primera lectura precisa tarda varios segundos y el sistema entrega antes posiciones guardadas
+const esIOS = () => Capacitor.getPlatform() === 'ios';
+const ESPERA_IOS_MS = 12000;
+const ANTIGUEDAD_MAXIMA_IOS_MS = 10000;
+
 class GeolocationService {
   private watchId: string | number | null = null;
   private isTracking = false;
@@ -105,7 +110,7 @@ class GeolocationService {
 
   public async getCurrentPosition(options?: { allowCached?: boolean; maxWaitMs?: number }): Promise<CoordsData> {
     const allowCached = options?.allowCached ?? true;
-    const maxWaitMs = options?.maxWaitMs ?? 4000;
+    const maxWaitMs = options?.maxWaitMs ?? (esIOS() ? ESPERA_IOS_MS : 4000);
 
     // Si ya tenemos coordenadas recientes (últimos 90s) y se permite caché, devolver inmediatamente (0ms)
     if (allowCached && this.lastKnownCoords && Date.now() - this.lastKnownCoords.timestamp < 90000) {
@@ -229,6 +234,8 @@ class GeolocationService {
         }
       };
       const onReading = (c: CoordsData) => {
+        // Una posición guardada puede ser precisa pero vieja: el servidor la rechaza al marcar
+        if (esIOS() && Date.now() - c.timestamp > ANTIGUEDAD_MAXIMA_IOS_MS) return;
         if (!best || c.accuracy < best.accuracy) best = c;
         options.onProgress?.(c.accuracy);
         if (c.accuracy <= options.maxAccuracy) finish(true);
@@ -249,6 +256,8 @@ class GeolocationService {
             if (err) return onFail('No se pudo obtener la ubicación GPS.');
             if (pos) onReading(toCoords(pos));
           });
+          // Si ya se había terminado antes de conocer el identificador, se apaga ahora
+          if (finished) stop();
         });
         return;
       }

@@ -704,7 +704,8 @@ export const WorkerPage: React.FC = () => {
       } catch {
         /* se prueba con la lectura de la verificación previa */
       }
-      if (!pos && currentCoords && currentCoords.accuracy <= maxPrec && Date.now() - currentCoords.timestamp <= 45000) {
+      // El servidor rechaza lecturas de más de 30 s: una anterior solo sirve si es más reciente que eso
+      if (!pos && currentCoords && currentCoords.accuracy <= maxPrec && Date.now() - currentCoords.timestamp <= 25000) {
         pos = currentCoords;
       }
       if (!pos) {
@@ -712,7 +713,7 @@ export const WorkerPage: React.FC = () => {
         alert(
           `Su ubicación no es lo bastante precisa. Se requiere ±${maxPrec} m o menos.\n\n` +
             '• Active la ubicación de alta precisión en su celular.\n' +
-            '• Permita la ubicación "precisa" para el navegador.\n' +
+            `• Permita la ubicación "precisa" ${esAppIOS ? 'a esta aplicación' : 'para el navegador'}.\n` +
             '• Salga a un lugar abierto, lejos de techos y paredes.\n\nLuego intente de nuevo.'
         );
         return;
