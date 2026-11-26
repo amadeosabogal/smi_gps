@@ -14,6 +14,15 @@ import type {
   InfoPrivacidad,
 } from '../types';
 
+/** Versión publicada de una app instalada (APK, App Store o TestFlight). */
+export interface VersionPublicada {
+  versionCode: number;
+  versionName: string;
+  minVersionCode: number;
+  url: string;
+  notas: string;
+}
+
 // URL base del API:
 //  - Navegador/PWA servida por el mismo backend: ruta relativa /api (sin problemas de CORS/HTTPS)
 //  - App Capacitor (Android/iOS): VITE_API_BASE_URL (ej. https://asistencia.tuempresa.com)
@@ -473,9 +482,10 @@ export const api = {
     return request('/location/track-token', { method: 'POST' });
   },
 
-  /** Última versión publicada de la app Android (null si no hay ninguna). Es público: sirve también antes de iniciar sesión. */
+  /** Última versión publicada de cada app (null si no hay ninguna). Es público: sirve también antes de iniciar sesión. */
   async getAppVersion(): Promise<{
-    android: { versionCode: number; versionName: string; minVersionCode: number; url: string; notas: string } | null;
+    android: VersionPublicada | null;
+    ios?: VersionPublicada | null; // un servidor sin actualizar no la envía
   }> {
     return request('/app/version', {}, { auth: false });
   },

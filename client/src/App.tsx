@@ -4,7 +4,7 @@ import { WorkerPage } from './pages/WorkerPage';
 // La consola de administración (mapas, recorrido, gráficos) pesa mucho y los trabajadores no la usan: se descarga solo en /admin
 const AdminPage = lazy(() => import('./pages/AdminPage').then((m) => ({ default: m.AdminPage })));
 import { UpdatePrompt } from './components/UpdatePrompt';
-import { esAppAndroid, esAppNativa } from './services/nativeTracker';
+import { esAppNativa } from './services/nativeTracker';
 import { AppUpdateNotice } from './components/AppUpdateNotice';
 
 export function App() {
@@ -12,8 +12,8 @@ export function App() {
     <BrowserRouter>
       {/* La app instalada lleva su propia versión empaquetada: el aviso de actualización web no aplica */}
       {!esAppNativa && <UpdatePrompt />}
-      {/* En la app Android el aviso equivalente consulta la última versión del APK publicada (en iPhone actualiza la tienda) */}
-      {esAppAndroid && <AppUpdateNotice />}
+      {/* En la app instalada el aviso equivalente consulta la última versión publicada (APK o tienda de Apple) */}
+      {esAppNativa && <AppUpdateNotice />}
       <Routes>
         {/* Ruta principal: Aplicación Móvil del Trabajador (PWA / Reloj Marcador) */}
         <Route path="/" element={<WorkerPage />} />

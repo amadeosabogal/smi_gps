@@ -663,24 +663,30 @@ app.get('/api/health', (req, res) => {
   res.json({ estado: 'ok', fecha: new Date().toISOString() });
 });
 
-// Última versión de la app Android. Se lee de version.json (que se sube junto con el APK), así publicar una
+// Última versión de las apps (Android e iPhone). Se lee de version.json (junto al APK), así publicar una
 // versión nueva no requiere reiniciar el servidor. Es público: solo contiene el número de versión y el enlace.
 let versionAppCache = null; // { t, data }
-function leerVersionAndroid() {
+function validarVersion(j, enlaceValido) {
+  const url = typeof j?.url === 'string' ? j.url.trim() : '';
+  if (!Number.isInteger(j?.versionCode) || j.versionCode <= 0 || !enlaceValido.test(url) || url.length > 300) return null;
+  return {
+    versionCode: j.versionCode,
+    versionName: typeof j.versionName === 'string' ? j.versionName.slice(0, 20) : String(j.versionCode),
+    minVersionCode: Number.isInteger(j.minVersionCode) && j.minVersionCode > 0 ? j.minVersionCode : 0,
+    url,
+    notas: typeof j.notas === 'string' ? j.notas.slice(0, 200) : '',
+  };
+}
+// Un solo archivo por instalación: los datos de Android van en la raíz y los de iPhone dentro de "ios"
+function leerVersionesApp() {
   if (versionAppCache && Date.now() - versionAppCache.t < 30_000) return versionAppCache.data;
-  let data = null;
+  let data = { android: null, ios: null };
   try {
     const j = JSON.parse(fs.readFileSync(config.androidVersionFile, 'utf8'));
-    const url = typeof j.url === 'string' ? j.url.trim() : '';
-    if (Number.isInteger(j.versionCode) && j.versionCode > 0 && /^https?:\/\//.test(url) && url.length <= 300) {
-      data = {
-        versionCode: j.versionCode,
-        versionName: typeof j.versionName === 'string' ? j.versionName.slice(0, 20) : String(j.versionCode),
-        minVersionCode: Number.isInteger(j.minVersionCode) && j.minVersionCode > 0 ? j.minVersionCode : 0,
-        url,
-        notas: typeof j.notas === 'string' ? j.notas.slice(0, 200) : '',
-      };
-    }
+    data = {
+      android: validarVersion(j, /^https?:\/\//),
+      ios: validarVersion(j.ios, /^https:\/\//), // App Store o TestFlight
+    };
   } catch {
     /* sin archivo o con formato inválido: no se avisa de nada */
   }
@@ -689,7 +695,7 @@ function leerVersionAndroid() {
 }
 app.get('/api/app/version', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
-  res.json({ android: leerVersionAndroid() });
+  res.json(leerVersionesApp());
 });
 
 // Lista mínima para la pantalla de ingreso del trabajador (sin datos sensibles)

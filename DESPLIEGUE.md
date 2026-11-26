@@ -153,6 +153,26 @@ Cada trabajador debe conceder en el celular: ubicación precisa, **"Permitir tod
 `minVersionCode` es la versión mínima aceptable: quien tenga una menor ve el aviso en rojo y **no puede cerrarlo** (no bloquea la app ni detiene el rastreo). Usa `0` o `1` si no quieres forzar a nadie. No hace falta reiniciar el servidor (se relee cada 30 s). La ruta del archivo se puede cambiar con `ANDROID_VERSION_FILE` en `service/.env`.
 El aviso existe solo desde la versión 1.0.1 de la app: quien tenga la 1.0.0 debe instalar la 1.0.1 una vez a mano.
 
+**Aviso de nueva versión en iPhone:** funciona igual, con el mismo `version.json`, usando el bloque `ios`. El botón dice **Actualizar** y abre la App Store o TestFlight (el enlace debe ser `https`).
+```json
+{
+  "versionCode": 2,
+  "versionName": "1.0.1",
+  "url": "https://asistencia.smi-peru.com/descargas/smi-gps.apk",
+  "ios": {
+    "versionCode": 2,
+    "versionName": "1.0.1",
+    "minVersionCode": 1,
+    "url": "https://apps.apple.com/app/idNUMERO_DE_LA_APP",
+    "notas": "Qué cambia en esta versión"
+  }
+}
+```
+- `ios.versionCode` es el número de **Build** de Xcode (`CURRENT_PROJECT_VERSION`), no el "Version". Súbelo en cada envío a Apple y usa solo números enteros.
+- Publica el bloque `ios` **después** de que la versión ya esté disponible para descargar.
+- No pongas en `ios.minVersionCode` un número mayor que el de la versión que Apple está revisando: el revisor vería el aviso obligatorio.
+- El servidor debe tener este cambio (`git pull` y reiniciar con PM2) para enviar el bloque `ios`; uno anterior simplemente no muestra el aviso en iPhone.
+
 ### Un turno, un dispositivo
 Cada instalación de la app (o navegador) genera un identificador y lo envía en la cabecera `X-Device-Id`. Al marcar la entrada, el turno queda **atado a ese dispositivo** (`RegistroAsistencia.dispositivo_id`): solo él puede enviar la ubicación del turno. Si el mismo usuario abre la app en otro teléfono, ese teléfono muestra "Su turno está activo en otro dispositivo", **no registra ubicación** y su servicio se detiene; el servidor responde `409/403 OTRO_DISPOSITIVO`. Así dos celulares con el mismo usuario no mezclan sus puntos y no se puede dejar un teléfono quieto mientras el trabajador se mueve con otro.
 
