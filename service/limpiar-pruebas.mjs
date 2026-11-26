@@ -25,6 +25,7 @@ if (iRespaldo >= 0 && (!rutaRespaldo || rutaRespaldo.startsWith('--'))) {
 // Orden de borrado: primero lo que depende de otras tablas (claves foráneas)
 const TABLAS = [
   ['AlmuerzosTurno', 'Almuerzos'],
+  ['SolicitudesMarcacion', 'Solicitudes de autorización'],
   ['HistorialUbicaciones', 'Puntos GPS del recorrido'],
   ['UbicacionesEnVivo', 'Ubicaciones en vivo'],
   ['AlertasEnviadas', 'Alertas enviadas por supervisores'],

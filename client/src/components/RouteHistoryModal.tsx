@@ -4,6 +4,7 @@ import L from 'leaflet';
 import { Pause, Play, RefreshCw, X } from 'lucide-react';
 import { api } from '../services/api';
 import { AuthImage } from './AuthImage';
+import { SIN_SENAL_SEG } from '../services/senal';
 import type { EstacionTrabajo, RecorridoTurno } from '../types';
 
 interface Props {
@@ -12,7 +13,8 @@ interface Props {
   onClose: () => void;
 }
 
-const GAP_SEGUNDOS = 90; // más de 90 s sin ningún punto = hueco de señal (igual que el aviso "Sin señal GPS")
+const GAP_SEGUNDOS = SIN_SENAL_SEG; // más tiempo sin ningún punto = hueco de señal (igual que el aviso "Sin señal GPS")
+const BATERIA_MAX_SEGUNDOS = 360; // intervalos más largos no cuentan para el consumo de batería
 const COLOR_DENTRO = '#1f7a4d';
 const COLOR_FUERA = '#b45f06';
 const COLOR_HUECO = '#64748b';
@@ -214,7 +216,7 @@ export const RouteHistoryModal: React.FC<Props> = ({ asistenciaId, workstations,
       const a = conBat[i - 1];
       const b = conBat[i];
       const dt = (b.t - a.t) / 1000;
-      if (dt > GAP_SEGUNDOS * 4) continue;
+      if (dt > BATERIA_MAX_SEGUNDOS) continue;
       if (a.cargando || b.cargando) {
         segCargando += dt;
       } else {

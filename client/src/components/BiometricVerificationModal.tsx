@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { marcaNombre } from '../brand';
-import { CheckCircle2, AlertTriangle, RefreshCw, X, RotateCcw, Eye, ArrowLeft, ArrowRight } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, RefreshCw, X, RotateCcw, Eye, ArrowLeft, ArrowRight, Send } from 'lucide-react';
 import { faceRecognitionService } from '../services/faceRecognition';
 import { eyeBlinkService } from '../services/eyeBlink';
 import {
@@ -9,10 +9,15 @@ import {
   distanciaDescriptores,
   DISTANCIA_MAX_CONTINUIDAD,
   TEXTO_RETO,
+  TEXTO_CORRECCION,
+  type Correccion,
+  type DiagnosticoRetos,
   type EstadoRetos,
   type MotivoFallo,
   type TipoReto,
 } from '../services/livenessChallenges';
+import { CaraGesto, GuiaGestos } from './GuiaGestos';
+import { diagnosticoParaEnviar, equipoActual, type EquipoInfo } from '../services/diagnosticoVida';
 import { api } from '../services/api';
 import type { Usuario, TipoVerificacion } from '../types';
 
@@ -26,6 +31,10 @@ interface BiometricVerificationModalProps {
     similarity: number;
     isVerified: boolean;
   }) => void;
+  /** Si la oficina puede autorizar marcaciones (el servidor lo admite) */
+  autorizacionDisponible?: boolean;
+  /** Envía a la oficina la solicitud de autorización. Debe lanzar un error con un mensaje claro si no se puede. */
+  onPedirAutorizacion?: (datos: { foto: string; descriptor: number[]; sinVerificacion: boolean }) => Promise<void>;
 }
 
 type StepState = 'ready' | 'processing' | 'success' | 'fraud_mismatch' | 'no_face';
@@ -38,12 +47,36 @@ const ETIQUETA_TIPO: Record<TipoVerificacion, string> = {
   almuerzo_fin: 'Fin de almuerzo',
 };
 
-const MENSAJE_FALLO: Record<Exclude<Fallo, null>, string> = {
-  tiempo: 'No se completó el movimiento a tiempo. Se le pedirá algo distinto: intente de nuevo.',
-  sin_rostro: 'Se perdió de vista su rostro. Colóquelo dentro del recuadro e intente de nuevo.',
-  inestable: 'No se pudo comenzar. Mire de frente a la cámara, con buena luz, y quédese quieto un momento.',
-  continuidad: 'No se pudo confirmar que fuera la misma persona durante toda la prueba. Intente de nuevo.',
+const mensajeFallo = (fallo: Exclude<Fallo, null>, d: DiagnosticoRetos | null): string => {
+  if (fallo === 'continuidad') return 'No se pudo confirmar que fuera la misma persona durante toda la prueba. Intente de nuevo.';
+  if (fallo === 'sin_rostro') return 'Se perdió de vista su rostro. Colóquelo dentro del recuadro e intente de nuevo.';
+  if (fallo === 'tiempo') {
+    return d?.gesto
+      ? `No se completó a tiempo: «${TEXTO_RETO[d.gesto]}». Hágalo apenas aparezca e intente de nuevo.`
+      : 'No se completó el movimiento a tiempo. Intente de nuevo.';
+  }
+  const donde =
+    d?.etapa === 'reposo'
+      ? 'Entre un gesto y otro debe volver a mirar de frente, quieto y serio.'
+      : d?.etapa === 'final'
+      ? 'Casi listo: al terminar, quédese mirando de frente y quieto.'
+      : 'No se pudo comenzar. Mire de frente, con buena luz, y quédese quieto.';
+  return d?.correccion ? `${donde} Le faltó: ${TEXTO_CORRECCION[d.correccion].toLowerCase()}.` : donde;
 };
+
+// La guía de gestos se muestra sola la primera vez en cada teléfono
+const CLAVE_GUIA = 'smi_guia_gestos_vista';
+const guiaVista = () => {
+  try {
+    return localStorage.getItem(CLAVE_GUIA) === '1';
+  } catch {
+    return false;
+  }
+};
+// Cuánto debe mantenerse un problema antes de avisarlo (para que un parpadeo no haga saltar el texto)
+const CORRECCION_ESTABLE_MS = 500;
+// Tras un bloqueo por intentos fallidos, durante este tiempo se puede pedir autorización a la oficina
+const VENTANA_AUTORIZACION_MS = 15 * 60 * 1000;
 
 // Intentos fallidos de la prueba de vida: tras 3 en 10 minutos se bloquea 2 minutos y los intentos quedan en la auditoría
 const CLAVE_FALLOS = 'smi_liveness_fallos';
@@ -73,6 +106,8 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
   tipo,
   worker,
   onVerificationSuccess,
+  autorizacionDisponible = false,
+  onPedirAutorizacion,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -94,6 +129,21 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cameraReady, setCameraReady] = useState<boolean>(false);
+  const [guiaAbierta, setGuiaAbierta] = useState<boolean>(() => !guiaVista());
+  const [correccion, setCorreccion] = useState<Correccion | null>(null);
+  const [falloDiag, setFalloDiag] = useState<DiagnosticoRetos | null>(null);
+  const [pidiendo, setPidiendo] = useState<boolean>(false);
+  const [errorAutorizacion, setErrorAutorizacion] = useState<string | null>(null);
+
+  // Para el diagnóstico de cada fallo: lecturas por segundo, último estado de la prueba y datos del teléfono
+  const fpsRef = useRef<number>(0);
+  const ultimoDiagRef = useRef<DiagnosticoRetos | null>(null);
+  const equipoRef = useRef<EquipoInfo>({ app: '', equipo: '' });
+  useEffect(() => {
+    equipoActual().then((e) => {
+      equipoRef.current = e;
+    });
+  }, []);
 
   // Descriptor facial del inicio de la prueba: al final debe ser la MISMA cara (evita cambiar de persona o de foto)
   const descInicioRef = useRef<number[] | null>(null);
@@ -114,7 +164,11 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     setSecuencia(generarSecuencia());
     setRetoEstado(null);
     setFallo(null);
+    setFalloDiag(null);
+    setCorreccion(null);
+    setErrorAutorizacion(null);
     descInicioRef.current = null;
+    ultimoDiagRef.current = null;
   }, []);
 
   // Reanudar cámara en vivo (descongelar) de forma instantánea
@@ -189,6 +243,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
   useEffect(() => {
     if (isOpen) {
+      setGuiaAbierta(!guiaVista());
       startCamera();
       // Si hay un bloqueo vigente por demasiados intentos, se respeta
       try {
@@ -254,14 +309,22 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     return canvas.toDataURL('image/jpeg', 0.82);
   };
 
-  // Anota un intento fallido de la prueba de vida. Desde el 2.º seguido queda en la auditoría de fraude con su foto
-  // (así se ve, por ejemplo, un video frente a la cámara), y al 3.º se bloquea unos minutos.
-  const registrarFallo = (motivo: Fallo) => {
+  // Anota un intento fallido de la prueba de vida: queda en la auditoría con su foto y su diagnóstico
+  // (así se ve, por ejemplo, un video frente a la cámara, o qué le impide pasar), y al 3.º se bloquea unos minutos.
+  const registrarFallo = (motivo: Fallo, diag: DiagnosticoRetos | null, distancia?: number) => {
+    setFalloDiag(diag);
     const lista = [...leerFallos(), Date.now()];
     guardarFallos(lista);
-    if (lista.length >= 2) {
-      const foto = captureSnapshot();
-      if (foto) api.reportLivenessFail(foto, String(motivo || 'desconocido'), lista.length).catch(() => {});
+    const foto = captureSnapshot();
+    if (foto) {
+      api
+        .reportLivenessFail(
+          foto,
+          String(motivo || 'desconocido'),
+          lista.length,
+          diagnosticoParaEnviar(diag, { ...equipoRef.current, fps: fpsRef.current, distancia, continuidad: motivo === 'continuidad' })
+        )
+        .catch(() => {});
     }
     if (lista.length >= MAX_FALLOS) {
       const hasta = Date.now() + BLOQUEO_MS;
@@ -314,7 +377,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
         const dist = distanciaDescriptores(descInicioRef.current, liveDescriptor);
         if (dist > DISTANCIA_MAX_CONTINUIDAD) {
           console.warn(`[BIOMETRÍA] la cara cambió durante la prueba (distancia ${dist.toFixed(2)})`);
-          registrarFallo('continuidad');
+          registrarFallo('continuidad', ultimoDiagRef.current, dist);
           setFallo('continuidad');
           setStep('ready');
           video.play().catch(() => {});
@@ -333,6 +396,11 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
       const finishSuccess = (similarity: number, message: string) => {
         guardarFallos([]);
+        try {
+          sessionStorage.removeItem(CLAVE_FALLOS + '_hasta');
+        } catch {
+          /* almacenamiento no disponible */
+        }
         setSimilarityScore(similarity);
         setStep('success');
         setStatusMessage(message);
@@ -385,7 +453,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
   // Prueba de vida con RETOS ALEATORIOS: se pide una secuencia de movimientos distinta cada vez (girar la cabeza,
   // sonreír, abrir la boca, parpadear dos veces). Un video grabado no sabe qué se va a pedir.
   useEffect(() => {
-    if (!isOpen || !cameraReady || step !== 'ready' || fallo || blinkModuleState !== 'ready' || bloqueadoHasta > Date.now()) return;
+    if (!isOpen || guiaAbierta || pidiendo || !cameraReady || step !== 'ready' || fallo || blinkModuleState !== 'ready' || bloqueadoHasta > Date.now()) return;
 
     let cancelled = false;
     const ejecutor = new EjecutorRetos(secuencia);
@@ -396,6 +464,8 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     let frames = 0;
     let fps = 0;
     let fpsStart = Date.now();
+    let corrActual: Correccion | null = null;
+    let corrDesde = 0;
 
     const loop = async () => {
       while (!cancelled) {
@@ -413,6 +483,14 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
             r && r.turn !== null ? { cerrado: r.closed, sonrisa: r.smile, boca: r.jaw, giro: r.turn } : null;
           const est = ejecutor.actualizar(lectura, ahora);
 
+          // El aviso de "qué corregir" solo aparece si el problema se mantiene un momento
+          if (est.correccion !== corrActual) {
+            corrActual = est.correccion;
+            corrDesde = ahora;
+          }
+          if (!corrActual) setCorreccion(null);
+          else if (ahora - corrDesde >= CORRECCION_ESTABLE_MS) setCorreccion(corrActual);
+
           // Se actualiza la pantalla solo cuando algo cambia (o cada ~120 ms para la barra de tiempo)
           const clave = `${est.fase}|${est.indice}|${est.esperandoReposo}|${est.parpadeos}|${lectura ? 1 : 0}`;
           if (clave !== ultimaClave || ahora - ultimoEmit > 120) {
@@ -425,6 +503,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
           const elapsed = (Date.now() - fpsStart) / 1000;
           if (elapsed >= 1) {
             fps = Math.round(frames / elapsed);
+            fpsRef.current = fps;
             frames = 0;
             fpsStart = Date.now();
           }
@@ -450,11 +529,12 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
           if (est.fase === 'fallo') {
             const motivo = est.motivo ?? 'tiempo';
-            registrarFalloRef.current(motivo);
+            registrarFalloRef.current(motivo, ejecutor.diagnostico());
             setFallo(motivo);
             return;
           }
           if (est.fase === 'listo') {
+            ultimoDiagRef.current = ejecutor.diagnostico();
             captureHandlerRef.current();
             return;
           }
@@ -469,22 +549,68 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
     return () => {
       cancelled = true;
     };
-  }, [isOpen, cameraReady, step, fallo, blinkModuleState, secuencia, bloqueadoHasta]);
+  }, [isOpen, guiaAbierta, pidiendo, cameraReady, step, fallo, blinkModuleState, secuencia, bloqueadoHasta]);
+
+  const abrirGuia = () => setGuiaAbierta(true);
+  const cerrarGuia = () => {
+    try {
+      localStorage.setItem(CLAVE_GUIA, '1');
+    } catch {
+      /* almacenamiento no disponible */
+    }
+    nuevaPrueba(); // la prueba empieza de cero, sin descontar el tiempo que estuvo leyendo
+    setGuiaAbierta(false);
+  };
+
+  // Tras fallar varias veces (o si la verificación no carga), se pide a la oficina que autorice la marcación
+  const pedirAutorizacion = async () => {
+    const video = videoRef.current;
+    if (!video || !cameraReady || pidiendo || !onPedirAutorizacion) return;
+    setPidiendo(true);
+    setErrorAutorizacion(null);
+    try {
+      await video.play().catch(() => {});
+      const deteccion = await faceRecognitionService.detectFullFace(video);
+      const foto = deteccion ? captureSnapshot() : null;
+      if (!deteccion || !foto) throw new Error('No se ve su rostro. Mire de frente a la cámara y toque de nuevo.');
+      await onPedirAutorizacion({
+        foto,
+        descriptor: Array.from(deteccion.descriptor),
+        sinVerificacion: blinkModuleState === 'error',
+      });
+    } catch (err: any) {
+      setErrorAutorizacion(err?.message || 'No se pudo enviar la solicitud. Intente de nuevo.');
+    } finally {
+      setPidiendo(false);
+    }
+  };
 
   // ---- Textos de la pantalla ----
   const bloqueado = bloqueadoHasta > ahoraTick;
   const segBloqueo = Math.max(0, Math.ceil((bloqueadoHasta - ahoraTick) / 1000));
 
+  const huboBloqueo = (() => {
+    try {
+      const hasta = Number(sessionStorage.getItem(CLAVE_FALLOS + '_hasta') || 0);
+      return hasta > 0 && ahoraTick - (hasta - BLOQUEO_MS) < VENTANA_AUTORIZACION_MS;
+    } catch {
+      return false;
+    }
+  })();
+  const puedePedirAutorizacion =
+    autorizacionDisponible && Boolean(onPedirAutorizacion) && (bloqueado || huboBloqueo || blinkModuleState === 'error');
+
   const instruccion = (() => {
     if (bloqueado) return `Demasiados intentos fallidos. Espere ${segBloqueo} s para volver a intentar.`;
     if (blinkModuleState === 'loading') return 'Preparando la verificación de vida. La primera vez puede tardar un poco.';
     if (blinkModuleState === 'error') return 'No se pudo cargar la verificación de vida. Recargue la página e intente de nuevo.';
-    if (fallo) return MENSAJE_FALLO[fallo];
+    if (fallo) return mensajeFallo(fallo, falloDiag);
     const e = retoEstado;
-    if (!e || e.fase === 'calibrando') return 'Mire de frente a la cámara, con el rostro dentro del recuadro, y quédese quieto.';
-    if (e.fase === 'reto' && e.esperandoReposo) return 'Quédese quieto y mire de frente…';
+    const aviso = correccion ? TEXTO_CORRECCION[correccion] : null;
+    if (!e || e.fase === 'calibrando') return aviso ?? 'Mire de frente a la cámara, con el rostro dentro del recuadro, y quédese quieto.';
+    if (e.fase === 'reto' && e.esperandoReposo) return aviso ?? 'Quédese quieto y mire de frente…';
     if (e.fase === 'reto' && e.reto) return TEXTO_RETO[e.reto] + (e.reto === 'parpadear2' ? ` (${e.parpadeos}/2)` : '');
-    if (e.fase === 'frontal') return 'Muy bien. Ahora mire de frente y quédese quieto.';
+    if (e.fase === 'frontal') return aviso ?? 'Muy bien. Ahora mire de frente y quédese quieto.';
     if (e.fase === 'listo') return 'Verificando…';
     return 'Mire a la cámara.';
   })();
@@ -510,10 +636,14 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
 
   const retoActivo = retoEstado && retoEstado.fase === 'reto' && !retoEstado.esperandoReposo && !fallo ? retoEstado.reto : null;
   const porcentajeTiempo = retoEstado && retoActivo ? Math.max(0, Math.min(100, (retoEstado.restanteMs / 4500) * 100)) : 0;
+  // Carita que acompaña la indicación: el gesto pedido, el que no salió, o la posición de frente
+  const gestoGuia = fallo ? (falloDiag?.etapa === 'gesto' && falloDiag.gesto ? falloDiag.gesto : 'inicio') : retoActivo ?? 'inicio';
+  const mostrarCara = step === 'ready' && cameraReady && !errorMessage && !bloqueado && blinkModuleState === 'ready';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-3 sm:p-4">
-      <div className="flex w-full max-w-md flex-col overflow-hidden border border-slate-300 bg-white shadow-xl">
+      <div className="relative flex max-h-[96vh] w-full max-w-md flex-col overflow-hidden border border-slate-300 bg-white shadow-xl">
+        {guiaAbierta && <GuiaGestos onCerrar={cerrarGuia} />}
         {/* Cabecera */}
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div>
@@ -533,7 +663,7 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
         </div>
 
         {/* Visor de cámara */}
-        <div className="relative aspect-[4/3] w-full overflow-hidden bg-slate-900">
+        <div className="relative aspect-[4/3] max-h-[45vh] w-full flex-shrink-0 overflow-hidden bg-slate-900">
           {/* El video permanece siempre montado para evitar pantallas negras */}
           <video ref={videoRef} autoPlay playsInline muted className="h-full w-full scale-x-[-1] object-cover" />
 
@@ -600,39 +730,40 @@ export const BiometricVerificationModal: React.FC<BiometricVerificationModalProp
         </div>
 
         {/* Estado y acciones */}
-        <div className="space-y-3 p-4">
-          <div className={`border-l-4 px-3 py-2.5 text-sm ${statusTone}`}>
-            {step === 'processing' ? (
-              <span className="flex items-center gap-2">
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                {statusMessage}
-              </span>
-            ) : step === 'ready' && cameraReady ? (
-              errorMessage || instruccion
-            ) : (
-              errorMessage || statusMessage
-            )}
+        <div className="min-h-0 space-y-3 overflow-y-auto p-4">
+          <div className={`flex items-center gap-3 border-l-4 px-3 py-2.5 text-sm ${statusTone}`}>
+            {mostrarCara && <CaraGesto key={gestoGuia} gesto={gestoGuia} className="h-20 w-20 flex-shrink-0" />}
+            <div className="min-w-0 flex-1" aria-live="polite">
+              {step === 'processing' ? (
+                <span className="flex items-center gap-2">
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  {statusMessage}
+                </span>
+              ) : step === 'ready' && cameraReady ? (
+                errorMessage || instruccion
+              ) : (
+                errorMessage || statusMessage
+              )}
+            </div>
           </div>
 
-          {/* Indicador de la prueba de vida */}
-          {step === 'ready' && !fallo && !bloqueado && (
-            <div
-              className={`flex items-center justify-center gap-2 border px-3 py-2.5 text-sm font-medium ${
-                !cameraReady ? 'border-slate-300 bg-slate-50 text-slate-500' : 'border-brand-200 bg-brand-50 text-brand-800'
-              }`}
-            >
+          {step === 'ready' && (
+            <button type="button" onClick={abrirGuia} className="flex w-full items-center justify-center gap-2 text-sm font-medium text-brand-700">
               <Eye className="h-4 w-4" />
-              <span>
-                {!cameraReady
-                  ? errorMessage
-                    ? 'Cámara no disponible'
-                    : 'Iniciando cámara…'
-                  : blinkModuleState === 'loading'
-                  ? 'Preparando verificación…'
-                  : blinkModuleState === 'error'
-                  ? 'Verificación no disponible'
-                  : 'Siga las indicaciones en pantalla'}
-              </span>
+              Ver cómo se hace
+            </button>
+          )}
+
+          {step === 'ready' && puedePedirAutorizacion && (
+            <div className="space-y-2">
+              <button type="button" onClick={pedirAutorizacion} disabled={pidiendo || !cameraReady} className="btn-secondary w-full py-3">
+                {pidiendo ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                {pidiendo ? 'Enviando solicitud…' : 'Pedir autorización a la oficina'}
+              </button>
+              <p className="text-center text-xs text-slate-600">
+                Mire de frente a la cámara al tocar el botón: la oficina verá esa foto y decidirá.
+              </p>
+              {errorAutorizacion && <p className="text-center text-sm text-red-800">{errorAutorizacion}</p>}
             </div>
           )}
 

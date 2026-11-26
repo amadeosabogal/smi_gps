@@ -6,11 +6,15 @@ import type {
   RegistroAsistencia,
   ResumenDashboard,
   DatosTrabajadorEnVivo,
-  AuditoriaFraudeFacial,
+  GrupoAlertas,
+  SolicitudMarcacion,
+  AutorizacionPanel,
   RecorridoTurno,
   TipoVerificacion,
   CalendarioRespuesta,
   EstadoDiaHoy,
+  RecordatoriosConfig,
+  RecordatoriosRespuesta,
   InfoPrivacidad,
 } from '../types';
 
@@ -228,9 +232,45 @@ export const api = {
     return request('/attendance/lunch/end', { method: 'POST', body: JSON.stringify({ foto, ticket }) });
   },
 
-  /** Un intento fallido de la prueba de vida (desde el 2.º seguido): queda en la auditoría de fraude con su foto. */
-  async reportLivenessFail(foto: string, motivo: string, intentos: number): Promise<void> {
-    await request('/biometric/liveness-fail', { method: 'POST', body: JSON.stringify({ foto, motivo, intentos }) });
+  /** Un intento fallido de la prueba de vida: queda en la auditoría con su foto y los datos para saber por qué falló. */
+  async reportLivenessFail(foto: string, motivo: string, intentos: number, diagnostico?: Record<string, string | number>): Promise<void> {
+    await request('/biometric/liveness-fail', { method: 'POST', body: JSON.stringify({ foto, motivo, intentos, diagnostico }) });
+  },
+
+  // ----- Autorización de la oficina (cuando la verificación no se logra) -----
+  /** Trabajador: ¿está disponible y tengo alguna solicitud reciente? */
+  async getMiAutorizacion(): Promise<{ habilitado: boolean; solicitud: SolicitudMarcacion | null }> {
+    return request('/authorization/me');
+  },
+
+  async pedirAutorizacion(datos: {
+    tipo: TipoVerificacion;
+    foto: string;
+    descriptor: number[];
+    sinVerificacion: boolean;
+    latitud?: number;
+    longitud?: number;
+    precision?: number;
+    antiguedadMs?: number;
+  }): Promise<{ isMatch: boolean; similarity: number; solicitud: SolicitudMarcacion | null }> {
+    return request('/authorization/request', { method: 'POST', body: JSON.stringify(datos) });
+  },
+
+  async cancelarAutorizacion(id: number): Promise<void> {
+    await request(`/authorization/${id}/cancel`, { method: 'POST' });
+  },
+
+  /** Oficina: solicitudes pendientes y las últimas resueltas. */
+  async getAutorizaciones(): Promise<{ habilitado: boolean; pendientes: AutorizacionPanel[]; resueltas: AutorizacionPanel[] }> {
+    return request('/authorization/list');
+  },
+
+  async aprobarAutorizacion(id: number): Promise<{ exito: boolean; trabajador: string }> {
+    return request(`/authorization/${id}/approve`, { method: 'POST' });
+  },
+
+  async rechazarAutorizacion(id: number, motivo: string): Promise<{ exito: boolean }> {
+    return request(`/authorization/${id}/reject`, { method: 'POST', body: JSON.stringify({ motivo }) });
   },
 
   async enrolSelf(descriptor: number[], foto: string, tipo: TipoVerificacion): Promise<{ similarity: number }> {
@@ -289,6 +329,15 @@ export const api = {
 
   // ----- Calendario de días no laborables -----
   /** Público: ¿hoy está bloqueada la app? (la pantalla de ingreso lo avisa) */
+  // ----- Recordatorios automáticos de marcación -----
+  async getRecordatorios(): Promise<RecordatoriosRespuesta> {
+    return request('/reminders/config');
+  },
+
+  async guardarRecordatorios(config: RecordatoriosConfig): Promise<RecordatoriosRespuesta> {
+    return request('/reminders/config', { method: 'PUT', body: JSON.stringify(config) });
+  },
+
   async getCalendarioHoy(): Promise<EstadoDiaHoy> {
     return request('/calendar/hoy', {}, { auth: false });
   },
@@ -452,9 +501,9 @@ export const api = {
     return request(`/attendance/${asistenciaId}/route`);
   },
 
-  // Obtener Auditorías de Fraude
-  async getFraudLogs(): Promise<AuditoriaFraudeFacial[]> {
-    return request('/attendance/fraud-logs');
+  /** Alertas agrupadas por trabajador, día y tipo (con el detalle de cada intento). */
+  async getFraudGroups(): Promise<GrupoAlertas[]> {
+    return request('/attendance/fraud-groups');
   },
 
   // Ping de Ubicación (solo turno activo)

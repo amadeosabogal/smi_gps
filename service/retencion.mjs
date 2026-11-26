@@ -19,9 +19,10 @@ const cuenta = async (pool, consulta, dias) =>
 
 /** Cuántos registros vencidos hay (no cambia nada). */
 export async function contarVencidos(pool, { fotosDias, registrosDias }) {
-  const t = { almuerzos: await existe(pool, 'AlmuerzosTurno'), alertas: await existe(pool, 'AlertasEnviadas') };
+  const t = { almuerzos: await existe(pool, 'AlmuerzosTurno'), alertas: await existe(pool, 'AlertasEnviadas'), solicitudes: await existe(pool, 'SolicitudesMarcacion') };
   const r = {};
   if (valido(fotosDias)) {
+    r.fotosSolicitudes = t.solicitudes ? await cuenta(pool, `SELECT COUNT(*) AS n FROM SolicitudesMarcacion WHERE estado <> 'pendiente' AND creada_en < DATEADD(DAY, -@d, GETDATE()) AND foto_solicitud_url IS NOT NULL`, fotosDias) : 0;
     r.fotosAsistencia = await cuenta(pool, `SELECT COUNT(*) AS n FROM RegistroAsistencia WHERE estado <> 'activo' AND hora_ingreso < DATEADD(DAY, -@d, GETDATE()) AND (foto_ingreso_url IS NOT NULL OR foto_salida_url IS NOT NULL)`, fotosDias);
     r.fotosAlmuerzo = t.almuerzos ? await cuenta(pool, `SELECT COUNT(*) AS n FROM AlmuerzosTurno WHERE inicio_en < DATEADD(DAY, -@d, GETDATE()) AND (foto_inicio_url IS NOT NULL OR foto_fin_url IS NOT NULL)`, fotosDias) : 0;
     r.fotosFraude = await cuenta(pool, `SELECT COUNT(*) AS n FROM AuditoriaFraudeFacial WHERE fecha_intento < DATEADD(DAY, -@d, GETDATE()) AND foto_intento_url IS NOT NULL`, fotosDias);
@@ -29,6 +30,7 @@ export async function contarVencidos(pool, { fotosDias, registrosDias }) {
   if (valido(registrosDias)) {
     r.asistencias = await cuenta(pool, `SELECT COUNT(*) AS n FROM RegistroAsistencia WHERE estado <> 'activo' AND hora_ingreso < DATEADD(DAY, -@d, GETDATE())`, registrosDias);
     r.alertasFraude = await cuenta(pool, `SELECT COUNT(*) AS n FROM AuditoriaFraudeFacial WHERE fecha_intento < DATEADD(DAY, -@d, GETDATE())`, registrosDias);
+    r.solicitudes = t.solicitudes ? await cuenta(pool, `SELECT COUNT(*) AS n FROM SolicitudesMarcacion WHERE estado <> 'pendiente' AND creada_en < DATEADD(DAY, -@d, GETDATE())`, registrosDias) : 0;
     r.avisos = t.alertas ? await cuenta(pool, `SELECT COUNT(*) AS n FROM AlertasEnviadas WHERE enviada_en < DATEADD(DAY, -@d, GETDATE())`, registrosDias) : 0;
   }
   return r;
@@ -48,9 +50,13 @@ async function enLotes(pool, consulta, dias) {
 
 /** Borra lo vencido. Devuelve cuántos registros afectó en cada concepto. */
 export async function purgarVencidos(pool, { fotosDias, registrosDias }) {
-  const t = { almuerzos: await existe(pool, 'AlmuerzosTurno'), alertas: await existe(pool, 'AlertasEnviadas') };
+  const t = { almuerzos: await existe(pool, 'AlmuerzosTurno'), alertas: await existe(pool, 'AlertasEnviadas'), solicitudes: await existe(pool, 'SolicitudesMarcacion') };
   const r = {};
   if (valido(fotosDias)) {
+    r.fotosSolicitudes = t.solicitudes ? await enLotes(pool, `
+      UPDATE TOP (@lote) SolicitudesMarcacion SET foto_solicitud_url = NULL
+       WHERE estado <> 'pendiente' AND creada_en < DATEADD(DAY, -@d, GETDATE()) AND foto_solicitud_url IS NOT NULL;
+      SELECT @@ROWCOUNT AS n;`, fotosDias) : 0;
     r.fotosAsistencia = await enLotes(pool, `
       UPDATE TOP (@lote) RegistroAsistencia SET foto_ingreso_url = NULL, foto_salida_url = NULL
        WHERE estado <> 'activo' AND hora_ingreso < DATEADD(DAY, -@d, GETDATE()) AND (foto_ingreso_url IS NOT NULL OR foto_salida_url IS NOT NULL);
@@ -81,6 +87,9 @@ export async function purgarVencidos(pool, { fotosDias, registrosDias }) {
     r.alertasFraude = await enLotes(pool, `
       DELETE TOP (@lote) FROM AuditoriaFraudeFacial WHERE fecha_intento < DATEADD(DAY, -@d, GETDATE());
       SELECT @@ROWCOUNT AS n;`, registrosDias);
+    r.solicitudes = t.solicitudes ? await enLotes(pool, `
+      DELETE TOP (@lote) FROM SolicitudesMarcacion WHERE estado <> 'pendiente' AND creada_en < DATEADD(DAY, -@d, GETDATE());
+      SELECT @@ROWCOUNT AS n;`, registrosDias) : 0;
     r.avisos = t.alertas ? await enLotes(pool, `
       DELETE TOP (@lote) FROM AlertasEnviadas WHERE enviada_en < DATEADD(DAY, -@d, GETDATE());
       SELECT @@ROWCOUNT AS n;`, registrosDias) : 0;

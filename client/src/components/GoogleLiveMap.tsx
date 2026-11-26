@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { setOptions, importLibrary } from '@googlemaps/js-api-loader';
 import type { EstacionTrabajo, DatosTrabajadorEnVivo, ColocacionEstacion, CambioColocacion } from '../types';
 import { Key, AlertTriangle, ExternalLink } from 'lucide-react';
+import { SIN_SENAL_SEG } from '../services/senal';
 
 function escapeXml(unsafe: string) {
   return (unsafe || '')
@@ -326,7 +327,7 @@ export const GoogleLiveMap: React.FC<GoogleLiveMapProps> = ({
     activeWorkers.forEach((worker) => {
       if (!worker.latitud || !worker.longitud) return;
 
-      const sinSenal = (worker.segundos_sin_ping ?? 0) > 90; // sin puntos GPS desde hace más de 90 s
+      const sinSenal = (worker.segundos_sin_ping ?? 0) > SIN_SENAL_SEG; // demasiado tiempo sin puntos GPS
       // Verde en estación, ámbar fuera, gris sin señal y turquesa si está en su almuerzo (el GPS sigue activo)
       const markerColor = sinSenal ? '#64748b' : worker.en_almuerzo ? '#0e7490' : worker.dentro_de_estacion ? '#1f7a4d' : '#b45f06';
       const initials = worker.nombre_usuario

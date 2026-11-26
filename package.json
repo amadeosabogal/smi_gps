@@ -26,6 +26,8 @@
     "migrate-dispositivo": "node service/migrate-dispositivo.mjs",
     "migrate-bateria": "node service/migrate-bateria.mjs",
     "migrate-almuerzo": "node service/migrate-almuerzo.mjs",
+    "migrate-autorizaciones": "node service/migrate-autorizaciones.mjs",
+    "migrate-recordatorios": "node service/migrate-recordatorios.mjs",
     "migrate-calendario": "node service/migrate-calendario.mjs",
     "limpiar-pruebas": "node service/limpiar-pruebas.mjs",
     "migrate-dni": "node service/migrate-dni.mjs",

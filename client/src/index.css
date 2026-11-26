@@ -186,3 +186,42 @@ thead th {
   background: transparent;
   border: 0;
 }
+
+/* --------------------------------------------------------------------------
+   Gestos animados de la prueba de vida (components/GuiaGestos.tsx)
+   -------------------------------------------------------------------------- */
+.gesto-pieza {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.gesto-giro-izq { animation: gesto-giro-izq 2.2s ease-in-out infinite; }
+.gesto-giro-der { animation: gesto-giro-der 2.2s ease-in-out infinite; }
+.gesto-serio { animation: gesto-serio 2.2s infinite; }
+.gesto-sonrisa { animation: gesto-sonrisa 2.2s infinite; }
+.gesto-boca { animation: gesto-boca 2.2s ease-in-out infinite; }
+.gesto-parpadeo { animation: gesto-parpadeo 2.2s infinite; }
+
+@keyframes gesto-giro-izq {
+  0%, 20%, 100% { transform: translateX(0) scaleX(1); }
+  45%, 75% { transform: translateX(-17px) scaleX(0.8); }
+}
+@keyframes gesto-giro-der {
+  0%, 20%, 100% { transform: translateX(0) scaleX(1); }
+  45%, 75% { transform: translateX(17px) scaleX(0.8); }
+}
+@keyframes gesto-serio {
+  0%, 25%, 85%, 100% { opacity: 1; }
+  35%, 75% { opacity: 0; }
+}
+@keyframes gesto-sonrisa {
+  0%, 25%, 85%, 100% { opacity: 0; }
+  35%, 75% { opacity: 1; }
+}
+@keyframes gesto-boca {
+  0%, 20%, 100% { transform: scaleY(0.12); }
+  45%, 75% { transform: scaleY(1); }
+}
+@keyframes gesto-parpadeo {
+  0%, 22%, 34%, 46%, 58%, 100% { transform: scaleY(1); }
+  28%, 52% { transform: scaleY(0.1); }
+}

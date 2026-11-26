@@ -33,6 +33,9 @@ export default defineConfig(({ mode }) => {
         // Eventos push/notificationclick: las alertas llegan con la app cerrada y la pantalla apagada
         importScripts: ['push-sw.js'],
         clientsClaim: true,
+        // El service worker no debe responder con la app a los enlaces que atiende el servidor: sin esto, abrir
+        // /descargas/smi-gps.apk en un navegador que ya usó la web mostraba la app en vez de descargar el APK.
+        navigateFallbackDenylist: [/^\/descargas\//, /^\/api\//],
         runtimeCaching: [
           {
             urlPattern: ({ url }: { url: URL }) =>

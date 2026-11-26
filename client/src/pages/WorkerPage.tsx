@@ -13,6 +13,7 @@ import { BrandLogo } from '../components/BrandLogo';
 import { syncPush, releasePush } from '../services/push';
 import { esAppNativa, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
 import { NativePermissionsModal } from '../components/NativePermissionsModal';
+import { useAutorizacion, mensajeRespuesta, NOMBRE_MARCACION } from '../services/useAutorizacion';
 import { DiaNoLaborable } from '../components/DiaNoLaborable';
 import { AvisoPrivacidad } from '../components/AvisoPrivacidad';
 
@@ -682,6 +683,68 @@ export const WorkerPage: React.FC = () => {
     await continuarMarcacion(tipo);
   };
 
+  // Autorización de la oficina cuando la verificación no se logra
+  const autorizacion = useAutorizacion(isAuthenticated && Boolean(selectedUser), (s) => {
+    const mensaje = mensajeRespuesta(s);
+    if (!mensaje) return;
+    if (s.estado === 'aprobada' && 'vibrate' in navigator) navigator.vibrate([100, 50, 100]);
+    // Primero se actualiza el turno (así el rastreo empieza o se detiene sin esperar a que cierre el aviso)
+    checkShiftStatus().finally(() => alert(mensaje));
+  });
+
+  // Al abrir la cámara se vuelve a consultar (p. ej. si recién se habilitó o ya aceptó el aviso de privacidad)
+  const revisarAutorizacion = autorizacion.revisar;
+  useEffect(() => {
+    if (isCameraOpen) revisarAutorizacion();
+  }, [isCameraOpen, revisarAutorizacion]);
+
+  const pedirAutorizacion = async (datos: { foto: string; descriptor: number[]; sinVerificacion: boolean }) => {
+    const tipo = cameraTipo;
+    let pos: CoordsData | null = null;
+    if (tipo === 'entrada') {
+      // La entrada exige la misma precisión que una marcación normal
+      const maxPrec = gpsCfgRef.current.maxPrecisionCheckin;
+      try {
+        const lectura = await geolocationService.getPrecisePosition({ maxAccuracy: maxPrec, waitMs: 6000 });
+        if (lectura.precise) pos = lectura.coords;
+      } catch {
+        /* se prueba con la lectura de la verificación previa */
+      }
+      if (!pos && currentCoords && currentCoords.accuracy <= maxPrec && Date.now() - currentCoords.timestamp <= 45000) {
+        pos = currentCoords;
+      }
+      if (!pos) throw new Error(`Su ubicación no es lo bastante precisa (se requiere ±${maxPrec} m). Salga a un lugar abierto e intente de nuevo.`);
+      setCurrentCoords(pos);
+    } else if (tipo === 'salida') {
+      pos = currentCoords || geolocationService.getLastKnownCoords();
+      // App Android: se envían los puntos pendientes mientras el turno sigue abierto
+      if (esAppNativa) await nativeTracker.enviarPendientes();
+    }
+
+    const r = await api.pedirAutorizacion({
+      tipo,
+      ...datos,
+      latitud: pos?.latitude,
+      longitud: pos?.longitude,
+      precision: pos?.accuracy,
+      antiguedadMs: pos ? Date.now() - pos.timestamp : undefined,
+    });
+    if (!r.isMatch || !r.solicitud) {
+      throw new Error(`Su rostro no coincide con el registrado (${r.similarity}%). No se envió la solicitud.`);
+    }
+    autorizacion.registrar(r.solicitud);
+    setIsCameraOpen(false);
+  };
+
+  const cancelarAutorizacion = async () => {
+    if (!window.confirm('¿Cancelar la solicitud enviada a la oficina?')) return;
+    try {
+      await autorizacion.cancelar();
+    } catch (err: any) {
+      alert(err.message || 'No se pudo cancelar la solicitud');
+    }
+  };
+
   // Handle Check-In con Reconocimiento Facial Biométrico y GPS Real
   const handleCheckInWithPhoto = async (fotoBase64: string, similarity = 100) => {
     if (!selectedUser) return;
@@ -1000,7 +1063,9 @@ export const WorkerPage: React.FC = () => {
       {alertaActiva && (
         <div className="fixed inset-x-0 top-0 z-[60] p-3 pt-[calc(env(safe-area-inset-top)_+_0.75rem)]">
           <div className="mx-auto max-w-xl border border-slate-300 border-l-4 border-l-amber-600 bg-white p-4 shadow-xl">
-            <p className="text-sm font-semibold text-amber-800">Alerta de su supervisor</p>
+            <p className="text-sm font-semibold text-amber-800">
+              {alertaActiva.mensaje.startsWith('Recordatorio') ? 'Recordatorio de marcación' : 'Alerta de su supervisor'}
+            </p>
             <p className="mt-1.5 text-base leading-snug text-slate-900">{alertaActiva.mensaje}</p>
             <button
               type="button"
@@ -1090,6 +1155,22 @@ export const WorkerPage: React.FC = () => {
             </div>
 
             <div className="px-4 pb-4">
+              {autorizacion.solicitud && (
+                <div className="mb-3 border-l-4 border-l-amber-600 bg-amber-50 p-3" role="status">
+                  <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    Esperando a la oficina
+                  </p>
+                  <p className="mt-1 text-sm text-slate-700">
+                    Pidió autorizar su {NOMBRE_MARCACION[autorizacion.solicitud.tipo]}{' '}
+                    ({new Date(autorizacion.solicitud.creada_en).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}). Si la
+                    aprueban, se registrará esa hora. Mantenga la aplicación abierta.
+                  </p>
+                  <button type="button" onClick={cancelarAutorizacion} className="btn-secondary btn-sm mt-2">
+                    Cancelar solicitud
+                  </button>
+                </div>
+              )}
               {isActiveShift ? (
                 <div className="space-y-2.5">
                   {/* Almuerzo en curso: reloj y botón para terminarlo */}
@@ -1271,7 +1352,8 @@ export const WorkerPage: React.FC = () => {
                       <p className="mt-0.5 text-sm text-slate-600">
                         Su ubicación se registra durante el turno aunque apague la pantalla o cierre esta aplicación. No
                         desinstale ni detenga la aplicación hasta registrar su salida.
-                        {estadoNativo && estadoNativo.pendientes > 3
+                        {/* se envía una vez por minuto: unos pocos puntos en espera son normales */}
+                        {estadoNativo && estadoNativo.pendientes > 12
                           ? ` Sin conexión: ${estadoNativo.pendientes} puntos pendientes de enviar.`
                           : ''}
                       </p>
@@ -1364,6 +1446,8 @@ export const WorkerPage: React.FC = () => {
           onClose={() => setIsCameraOpen(false)}
           tipo={cameraTipo}
           worker={selectedUser}
+          autorizacionDisponible={autorizacion.habilitado}
+          onPedirAutorizacion={pedirAutorizacion}
           onVerificationSuccess={(result) => {
             setIsCameraOpen(false);
             if (cameraTipo === 'entrada') {

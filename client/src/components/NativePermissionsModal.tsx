@@ -58,6 +58,8 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
   const necesitaNotif = est.android >= 33;
   const listo = permisosCompletos(est);
 
+  // Tocar el círculo o el texto de un paso pendiente hace lo mismo que su botón: abre el permiso en Android.
+  // El check NO se marca con el toque: solo cuando el teléfono confirma que el permiso quedó concedido.
   const Paso: React.FC<{
     ok: boolean;
     titulo: string;
@@ -65,26 +67,47 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
     boton?: string;
     onClick?: () => void;
     recomendado?: boolean;
-  }> = ({ ok, titulo, detalle, boton, onClick, recomendado }) => (
-    <li className="flex items-start gap-3 border-b border-slate-200 py-3 last:border-b-0">
-      {ok ? (
-        <CheckCircle2 className="mt-0.5 h-5 w-5 flex-shrink-0 text-green-700" />
-      ) : (
-        <Circle className="mt-0.5 h-5 w-5 flex-shrink-0 text-slate-400" />
-      )}
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-semibold text-slate-900">
-          {titulo} {recomendado && !ok && <span className="tag ml-1">Recomendado</span>}
-        </p>
-        <p className="mt-0.5 text-sm text-slate-600">{detalle}</p>
-        {!ok && boton && onClick && (
-          <button type="button" disabled={ocupado} onClick={onClick} className="btn btn-primary btn-sm mt-2">
-            {boton}
-          </button>
+    /** Ayudas adicionales del mismo paso (van antes de la línea separadora) */
+    extra?: React.ReactNode;
+  }> = ({ ok, titulo, detalle, boton, onClick, recomendado, extra }) => {
+    const tocable = !ok && Boolean(onClick);
+    const contenido = (
+      <>
+        {ok ? (
+          <CheckCircle2 className="mt-0.5 h-6 w-6 flex-shrink-0 text-green-700" aria-label="Listo" />
+        ) : (
+          <Circle className="mt-0.5 h-6 w-6 flex-shrink-0 text-brand-600" aria-label="Pendiente" />
         )}
-      </div>
-    </li>
-  );
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold text-slate-900">
+            {titulo} {recomendado && !ok && <span className="tag ml-1">Recomendado</span>}
+          </span>
+          <span className="mt-0.5 block text-sm text-slate-600">{detalle}</span>
+        </span>
+      </>
+    );
+    return (
+      <li className="border-b border-slate-200 py-3 last:border-b-0">
+        {tocable ? (
+          <button type="button" disabled={ocupado} onClick={onClick} className="flex w-full items-start gap-3 text-left">
+            {contenido}
+          </button>
+        ) : (
+          <div className="flex items-start gap-3">{contenido}</div>
+        )}
+        {(extra || (!ok && boton && onClick)) && (
+          <div className="pl-9">
+            {!ok && boton && onClick && (
+              <button type="button" disabled={ocupado} onClick={onClick} className="btn btn-primary btn-sm mt-2">
+                {boton}
+              </button>
+            )}
+            {extra}
+          </div>
+        )}
+      </li>
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 p-0 sm:items-center sm:p-4">
@@ -92,7 +115,7 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
         <h2 className="text-base font-semibold text-slate-900">Configurar el rastreo del turno</h2>
         <p className="mt-1 text-sm text-slate-600">
           Para que su ubicación se registre con la pantalla apagada, la aplicación necesita estos permisos. Solo se
-          configuran una vez.
+          configuran una vez. <strong>Toque cada círculo</strong> para activarlo: el check aparece cuando quede concedido.
         </p>
 
         <ul className="mt-3">
@@ -115,20 +138,21 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
             titulo='Ubicación "Permitir todo el tiempo"'
             detalle='Es lo que permite seguir registrando con la pantalla apagada. En Ajustes → Permisos → Ubicación, marque "Permitir todo el tiempo".'
             boton={p.ubicacionPrecisa ? 'Permitir todo el tiempo' : undefined}
-            onClick={() => ejecutar(() => nativeTracker.pedirSegundoPlano())}
+            // Android solo deja pedir "todo el tiempo" después de la ubicación precisa: si falta, se pide primero esa
+            onClick={() => ejecutar(() => (p.ubicacionPrecisa ? nativeTracker.pedirSegundoPlano() : nativeTracker.pedirUbicacion()))}
+            extra={
+              !p.segundoPlano && p.ubicacionPrecisa ? (
+                <button type="button" disabled={ocupado} onClick={() => ejecutar(() => nativeTracker.abrirAjustes())} className="btn btn-secondary btn-sm mt-2">
+                  Abrir ajustes de la aplicación
+                </button>
+              ) : null
+            }
           />
-          {!p.segundoPlano && p.ubicacionPrecisa && (
-            <li className="pb-2 pl-8">
-              <button type="button" disabled={ocupado} onClick={() => ejecutar(() => nativeTracker.abrirAjustes())} className="btn btn-secondary btn-sm">
-                Abrir ajustes de la aplicación
-              </button>
-            </li>
-          )}
           {necesitaNotif && (
             <Paso
               ok={p.notificaciones}
               titulo="Notificaciones"
-              detalle="Se muestra un aviso fijo mientras su ubicación se registra, y le llegarán las alertas del supervisor."
+              detalle="Se muestra un aviso fijo mientras su ubicación se registra, y le llegarán las alertas de la oficina."
               boton="Permitir"
               onClick={() => ejecutar(() => nativeTracker.pedirNotificaciones())}
             />
@@ -144,27 +168,29 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
             }
             boton="Quitar restricción"
             onClick={() => ejecutar(() => nativeTracker.pedirBateria())}
+            extra={
+              /xiaomi|redmi|poco|samsung/i.test(est.fabricante) ? (
+                <div className="mt-2">
+                  <p className="text-xs text-slate-600">
+                    {/samsung/i.test(est.fabricante)
+                      ? 'Samsung: en Ajustes → Batería → Límites de uso en segundo plano, quite esta aplicación de "Apps en suspensión".'
+                      : 'Xiaomi: active además el "Inicio automático" de esta aplicación y elija "Sin restricciones" en Ahorro de batería.'}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={ocupado}
+                    onClick={() => ejecutar(async () => {
+                      const r = await nativeTracker.abrirAjustesFabricante();
+                      if (!r.abierto) await nativeTracker.abrirAjustes();
+                    })}
+                    className="btn btn-secondary btn-sm mt-1"
+                  >
+                    Abrir ajustes del fabricante
+                  </button>
+                </div>
+              ) : null
+            }
           />
-          {(/xiaomi|redmi|poco|samsung/i.test(est.fabricante) || false) && (
-            <li className="pb-1 pl-8">
-              <p className="text-xs text-slate-600">
-                {/samsung/i.test(est.fabricante)
-                  ? 'Samsung: en Ajustes → Batería → Límites de uso en segundo plano, quite esta aplicación de "Apps en suspensión".'
-                  : 'Xiaomi: active además el "Inicio automático" de esta aplicación y elija "Sin restricciones" en Ahorro de batería.'}
-              </p>
-              <button
-                type="button"
-                disabled={ocupado}
-                onClick={() => ejecutar(async () => {
-                  const r = await nativeTracker.abrirAjustesFabricante();
-                  if (!r.abierto) await nativeTracker.abrirAjustes();
-                })}
-                className="btn btn-secondary btn-sm mt-1"
-              >
-                Abrir ajustes del fabricante
-              </button>
-            </li>
-          )}
         </ul>
 
         {aviso && <p className="mt-2 text-sm text-red-800">{aviso}</p>}

@@ -4,7 +4,7 @@ import sql from 'mssql';
 const existe = async (pool, tabla) =>
   Boolean((await pool.request().query(`SELECT OBJECT_ID('${tabla}', 'U') AS id`)).recordset[0].id);
 
-const COLUMNAS_FOTO = ['foto_ingreso_url', 'foto_salida_url', 'foto_inicio_url', 'foto_fin_url', 'foto_intento_url', 'foto_referencia_url'];
+const COLUMNAS_FOTO = ['foto_ingreso_url', 'foto_salida_url', 'foto_inicio_url', 'foto_fin_url', 'foto_intento_url', 'foto_referencia_url', 'foto_solicitud_url'];
 
 // Sin fotos: se indica solo si existen (las fotos pesan mucho; se piden aparte con fotos=1)
 function sinFotos(fila) {
@@ -37,6 +37,7 @@ export async function exportarDatos(pool, usuarioId, { fotos = false } = {}) {
     ultimaUbicacion: await q('UbicacionesEnVivo', 'SELECT * FROM UbicacionesEnVivo WHERE usuario_id = @u'),
     avisosRecibidos: await q('AlertasEnviadas', 'SELECT id, mensaje, enviada_en, leida_en FROM AlertasEnviadas WHERE usuario_id = @u ORDER BY id'),
     alertasDeSeguridad: await q('AuditoriaFraudeFacial', 'SELECT * FROM AuditoriaFraudeFacial WHERE usuario_id = @u ORDER BY id'),
+    solicitudesDeAutorizacion: await q('SolicitudesMarcacion', 'SELECT * FROM SolicitudesMarcacion WHERE usuario_id = @u ORDER BY id'),
     autorizacionesDeDiasNoLaborables: await q('CalendarioExcepciones', 'SELECT fecha, motivo, creado_en FROM CalendarioExcepciones WHERE usuario_id = @u ORDER BY fecha'),
     aceptacionesDelAviso: await q('AceptacionesPrivacidad', 'SELECT * FROM AceptacionesPrivacidad WHERE usuario_id = @u ORDER BY id'),
   };
@@ -49,6 +50,11 @@ export async function darDeBaja(pool, usuarioId) {
   );
   if (await existe(pool, 'SuscripcionesPush')) await pool.request().input('u', sql.Int, usuarioId).query('DELETE FROM SuscripcionesPush WHERE usuario_id = @u');
   await pool.request().input('u', sql.Int, usuarioId).query('UPDATE UbicacionesEnVivo SET activo = 0 WHERE usuario_id = @u');
+  if (await existe(pool, 'SolicitudesMarcacion')) {
+    await pool.request().input('u', sql.Int, usuarioId).query(
+      "UPDATE SolicitudesMarcacion SET estado = 'anulada', resuelta_en = GETDATE() WHERE usuario_id = @u AND estado = 'pendiente'"
+    );
+  }
 }
 
 /** Elimina TODO rastro del trabajador: sus asistencias, recorridos, almuerzos, alertas y su propio usuario. No se puede deshacer. */
@@ -56,6 +62,7 @@ export async function eliminarTodo(pool, usuarioId) {
   const tablas = [];
   for (const [tabla, filtro] of [
     ['AlmuerzosTurno', 'usuario_id = @u'],
+    ['SolicitudesMarcacion', 'usuario_id = @u'],
     ['HistorialUbicaciones', 'usuario_id = @u'],
     ['UbicacionesEnVivo', 'usuario_id = @u'],
     ['AlertasEnviadas', 'usuario_id = @u OR enviado_por = @u'],

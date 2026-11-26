@@ -3,7 +3,7 @@ import { marcaNombre } from '../brand';
 import { Bell, BellOff, BellRing } from 'lucide-react';
 import { enablePush, getPushState, type PushState } from '../services/push';
 
-// Panel del trabajador para activar las alertas del supervisor en su celular.
+// Panel del trabajador para activar en su celular las alertas del supervisor y los recordatorios de marcación.
 export const PushAlertCard: React.FC = () => {
   const [state, setState] = useState<PushState>('cargando');
   const [busy, setBusy] = useState<boolean>(false);
@@ -40,7 +40,8 @@ export const PushAlertCard: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-slate-900">Alertas activadas</h3>
           <p className="mt-0.5 text-sm text-slate-600">
-            Recibirá los avisos de su supervisor en este celular, aunque tenga la pantalla apagada.
+            Recibirá en este celular los recordatorios de marcación y los avisos de su supervisor, aunque tenga la pantalla
+            apagada.
           </p>
         </div>
       </section>
@@ -55,12 +56,13 @@ export const PushAlertCard: React.FC = () => {
         <Bell className="mt-0.5 h-5 w-5 flex-shrink-0 text-brand-600" />
       )}
       <div className="flex-1">
-        <h3 className="text-sm font-semibold text-slate-900">Alertas del supervisor</h3>
+        <h3 className="text-sm font-semibold text-slate-900">Alertas y recordatorios</h3>
 
         {state === 'inactivo' && (
           <>
             <p className="mt-0.5 text-sm text-slate-600">
-              Active las notificaciones para recibir avisos importantes aunque tenga la pantalla apagada.
+              Active las notificaciones para que se le recuerde marcar su almuerzo y su salida, y recibir avisos aunque tenga
+              la pantalla apagada.
             </p>
             <button type="button" onClick={handleEnable} disabled={busy} className="btn-primary btn-sm mt-3">
               {busy ? 'Activando…' : 'Activar alertas'}

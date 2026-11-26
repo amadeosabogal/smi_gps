@@ -81,6 +81,55 @@ export interface AuditoriaFraudeFacial {
   notas?: string | null;
 }
 
+/** Alertas de un mismo trabajador, día y tipo, juntas en una sola fila. */
+export interface GrupoAlertas {
+  clave: string;
+  usuario_id: number;
+  nombre_usuario?: string;
+  codigo_empleado?: string;
+  tipo_evento: string;
+  /** Día (AAAA-MM-DD) en la zona horaria de la empresa */
+  dia: string;
+  total: number;
+  primera: string;
+  ultima: string;
+  /** Fallos de la prueba de vida por motivo, p. ej. { inestable: 12, tiempo: 6 } */
+  motivos: Record<string, number>;
+  /** Cada intento, del más reciente al más antiguo */
+  alertas: AuditoriaFraudeFacial[];
+}
+
+export type EstadoSolicitud = 'pendiente' | 'aprobada' | 'rechazada' | 'vencida' | 'anulada';
+
+/** Solicitud de autorización vista por el trabajador. */
+export interface SolicitudMarcacion {
+  id: number;
+  tipo: TipoVerificacion;
+  estado: EstadoSolicitud;
+  creada_en: string;
+  /** Segundos que faltan para que venza (0 si ya no está pendiente) */
+  segundos_restantes: number;
+  motivo_rechazo?: string | null;
+}
+
+/** Solicitud vista por la oficina. */
+export interface AutorizacionPanel extends SolicitudMarcacion {
+  usuario_id: number;
+  nombre_usuario: string;
+  codigo_empleado: string;
+  cargo?: string | null;
+  similitud: number;
+  latitud?: number | null;
+  longitud?: number | null;
+  precision?: number | null;
+  estacion_nombre?: string | null;
+  sin_verificacion: boolean;
+  fallos: number;
+  tiene_foto: boolean;
+  resuelta_en?: string | null;
+  resuelta_por_nombre?: string | null;
+}
+
 export interface DatosTrabajadorEnVivo {
   usuario_id: number;
   codigo_empleado: string;
@@ -195,6 +244,27 @@ export interface CalendarioRespuesta {
   zonaHoraria: string;
   diasLibres: number[];
   dias: DiaCalendario[];
+}
+
+/** Horas "HH:MM" a las que se recuerda marcar; null = no avisar */
+export interface HorasAviso {
+  almuerzo: string | null;
+  salida: string | null;
+}
+
+export interface RecordatoriosConfig {
+  /** Avisar cuando se cumplen los minutos de almuerzo */
+  finAlmuerzo: boolean;
+  semana: HorasAviso;
+  sabado: HorasAviso;
+  domingo: HorasAviso;
+}
+
+export interface RecordatoriosRespuesta {
+  habilitado: boolean;
+  config: RecordatoriosConfig;
+  almuerzoHabilitado: boolean;
+  almuerzoMinutos: number;
 }
 
 export interface EstadoDiaHoy {

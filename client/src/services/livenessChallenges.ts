@@ -31,6 +31,35 @@ export interface Lectura {
 export type FaseRetos = 'calibrando' | 'reto' | 'frontal' | 'listo' | 'fallo';
 export type MotivoFallo = 'tiempo' | 'sin_rostro' | 'inestable';
 
+/** En qué momento de la prueba está (o falló): antes de empezar, en reposo entre gestos, haciendo un gesto o al final. */
+export type EtapaRetos = 'inicio' | 'reposo' | 'gesto' | 'final';
+
+/** Lo que impide avanzar ahora mismo. Solo informa: no cambia ningún límite. */
+export type Correccion = 'ojos' | 'giro' | 'boca' | 'sonrisa';
+
+export const TEXTO_CORRECCION: Record<Correccion, string> = {
+  ojos: 'Abra bien los ojos',
+  giro: 'Mire de frente a la cámara',
+  boca: 'Cierre la boca',
+  sonrisa: 'No sonría todavía',
+};
+
+/** Datos de un intento, para saber después por qué falló (se envían al servidor junto con el fallo). */
+export interface DiagnosticoRetos {
+  etapa: EtapaRetos;
+  /** Gesto pedido (o el siguiente, si falló en reposo). null antes de empezar o al final */
+  gesto: TipoReto | null;
+  indice: number;
+  total: number;
+  /** Última lectura del rostro (null si no se veía) */
+  lectura: Lectura | null;
+  /** Posición de reposo medida al inicio (null si no se llegó a medir) */
+  base: { giro: number; sonrisa: number; boca: number } | null;
+  correccion: Correccion | null;
+  /** Lo máximo que alcanzó en el gesto: desplazamiento del giro, sonrisa, apertura de boca o parpadeos */
+  maximo: number | null;
+}
+
 export interface EstadoRetos {
   fase: FaseRetos;
   /** Reto actual (0..total-1) */
@@ -44,6 +73,9 @@ export interface EstadoRetos {
   /** Para "parpadear dos veces": parpadeos ya detectados */
   parpadeos: number;
   motivo?: MotivoFallo;
+  etapa: EtapaRetos;
+  /** Qué debe corregir la persona para poder avanzar (null si no hace falta) */
+  correccion: Correccion | null;
 }
 
 export interface ConfigRetos {
@@ -104,6 +136,7 @@ export class EjecutorRetos {
   private secuencia: TipoReto[];
 
   private fase: FaseRetos = 'calibrando';
+  private faseAlFallar: FaseRetos = 'calibrando';
   private indice = 0;
   private motivo: MotivoFallo | undefined;
 
@@ -121,6 +154,12 @@ export class EjecutorRetos {
   private frontalSeguidos = 0;
   private parpadeos = 0;
   private detectorParpadeo: BlinkDetector;
+
+  // solo para informar y diagnosticar
+  private ultimaLectura: Lectura | null = null;
+  private correccion: Correccion | null = null;
+  private maximo: number | null = null;
+  private baseMedida = false;
 
   constructor(secuencia: TipoReto[], cfg: ConfigRetos = CONFIG_RETOS) {
     this.cfg = cfg;
@@ -154,15 +193,24 @@ export class EjecutorRetos {
     this.frontalSeguidos = 0;
     this.parpadeos = 0;
     this.detectorParpadeo = this.nuevoDetector();
+    this.ultimaLectura = null;
+    this.correccion = null;
+    this.maximo = null;
+    this.baseMedida = false;
+  }
+
+  /** Qué impide considerar el rostro "en reposo" (null = está en reposo). */
+  private faltaParaReposo(l: Lectura): Correccion | null {
+    if (!(l.cerrado < 0.35)) return 'ojos';
+    if (!(Math.abs(l.giro - this.base.giro) <= 0.07)) return 'giro';
+    if (!(l.boca <= this.base.boca + 0.1)) return 'boca';
+    if (!(l.sonrisa <= Math.min(0.3, this.base.sonrisa + 0.12))) return 'sonrisa';
+    return null;
   }
 
   private enReposo(l: Lectura): boolean {
-    return (
-      Math.abs(l.giro - this.base.giro) <= 0.07 &&
-      l.sonrisa <= Math.min(0.3, this.base.sonrisa + 0.12) &&
-      l.boca <= this.base.boca + 0.1 &&
-      l.cerrado < 0.35
-    );
+    this.correccion = this.faltaParaReposo(l);
+    return this.correccion === null;
   }
 
   private hayGesto(tipo: TipoReto, l: Lectura): boolean {
@@ -181,7 +229,32 @@ export class EjecutorRetos {
     }
   }
 
+  private etapa(): EtapaRetos {
+    // al fallar, la etapa es la que estaba en curso
+    const fase = this.fase === 'fallo' ? this.faseAlFallar : this.fase;
+    if (fase === 'calibrando') return 'inicio';
+    if (fase === 'reto') return this.esperandoReposo ? 'reposo' : 'gesto';
+    return 'final';
+  }
+
+  /** Foto de lo que estaba pasando, para registrar por qué falló un intento. */
+  public diagnostico(): DiagnosticoRetos {
+    const etapa = this.etapa();
+    const conGesto = etapa === 'reposo' || etapa === 'gesto';
+    return {
+      etapa,
+      gesto: conGesto ? this.secuencia[this.indice] : null,
+      indice: Math.min(this.indice, this.secuencia.length),
+      total: this.secuencia.length,
+      lectura: this.ultimaLectura,
+      base: this.baseMedida ? { ...this.base } : null,
+      correccion: this.correccion,
+      maximo: etapa === 'gesto' ? this.maximo : null,
+    };
+  }
+
   private fallar(motivo: MotivoFallo): void {
+    if (this.fase !== 'fallo') this.faseAlFallar = this.fase;
     this.fase = 'fallo';
     this.motivo = motivo;
   }
@@ -198,6 +271,8 @@ export class EjecutorRetos {
       restanteMs: restante,
       parpadeos: this.parpadeos,
       motivo: this.motivo,
+      etapa: this.etapa(),
+      correccion: this.correccion,
     };
   }
 
@@ -214,6 +289,8 @@ export class EjecutorRetos {
 
     // Sin rostro: se pierde el progreso del gesto en curso y, si dura, la prueba falla
     if (!l) {
+      this.ultimaLectura = null;
+      this.correccion = null;
       this.confirmados = 0;
       this.reposoSeguidos = 0;
       this.frontalSeguidos = 0;
@@ -222,6 +299,7 @@ export class EjecutorRetos {
       return this.estado(ahora);
     }
     this.ultimaCara = ahora;
+    this.ultimaLectura = l;
 
     switch (this.fase) {
       case 'calibrando':
@@ -237,7 +315,16 @@ export class EjecutorRetos {
 
   private calibrar(l: Lectura, ahora: number): EstadoRetos {
     const c = this.cfg;
-    const apto = Math.abs(l.giro - 0.5) <= c.giroTolerancia0 && l.sonrisa < 0.25 && l.boca < 0.2 && l.cerrado < 0.4;
+    this.correccion = !(l.cerrado < 0.4)
+      ? 'ojos'
+      : !(Math.abs(l.giro - 0.5) <= c.giroTolerancia0)
+      ? 'giro'
+      : !(l.boca < 0.2)
+      ? 'boca'
+      : !(l.sonrisa < 0.25)
+      ? 'sonrisa'
+      : null;
+    const apto = this.correccion === null;
     this.muestras = apto ? [...this.muestras, l].slice(-c.calibracionFrames) : [];
     if (this.muestras.length >= c.calibracionFrames) {
       this.base = {
@@ -245,6 +332,7 @@ export class EjecutorRetos {
         sonrisa: mediana(this.muestras.map((m) => m.sonrisa)),
         boca: mediana(this.muestras.map((m) => m.boca)),
       };
+      this.baseMedida = true;
       this.fase = 'reto';
       this.indice = 0;
       this.iniciarReto(ahora);
@@ -260,7 +348,16 @@ export class EjecutorRetos {
     this.confirmados = 0;
     this.inicioEspera = ahora;
     this.parpadeos = 0;
+    this.maximo = null;
     this.detectorParpadeo = this.nuevoDetector();
+  }
+
+  private avance(tipo: TipoReto, l: Lectura): number {
+    if (tipo === 'giro_izq') return l.giro - this.base.giro;
+    if (tipo === 'giro_der') return this.base.giro - l.giro;
+    if (tipo === 'sonreir') return l.sonrisa;
+    if (tipo === 'abrir_boca') return l.boca;
+    return this.parpadeos;
   }
 
   private hacerReto(l: Lectura, ahora: number): EstadoRetos {
@@ -274,6 +371,7 @@ export class EjecutorRetos {
         this.esperandoReposo = false;
         this.inicioReto = ahora;
         this.confirmados = 0;
+        this.correccion = null;
       } else if (ahora - this.inicioEspera > c.esperaReposoMs) {
         this.fallar('inestable');
       }
@@ -286,6 +384,7 @@ export class EjecutorRetos {
       return this.estado(ahora);
     }
 
+    this.correccion = null;
     let hecho = false;
     if (tipo === 'parpadear2') {
       if (this.detectorParpadeo.update(1 - l.cerrado, ahora) === 'blinked') {
@@ -297,6 +396,8 @@ export class EjecutorRetos {
       this.confirmados = this.hayGesto(tipo, l) ? this.confirmados + 1 : 0;
       hecho = this.confirmados >= c.confirmarFrames;
     }
+
+    this.maximo = Math.max(this.maximo ?? 0, this.avance(tipo, l));
 
     if (hecho) {
       this.indice += 1;

@@ -70,7 +70,7 @@ Opciones de compilación del frontend (`client/.env`, se leen al hacer `build`):
 - Las listas del panel **no incluyen fotos**: se piden una por una al verlas (`/api/photos/...`, solo para administradores).
 - El panel pide el estado en vivo cada 3 s (liviano) y los listados completos cada 30 s o, tras un grupo de marcas, en **una sola** recarga.
 - El login no congela el servidor: el hash del PIN se calcula en hilos aparte.
-- **Puntos GPS:** el celular envía uno cada 15 s (o antes, mínimo 5 s, si el trabajador se movió más de 25 m), y el servidor descarta los casi idénticos (menos de 5 s y 10 m). Sin esto el GPS puede avisar cada segundo (~30 GB/año con 30 trabajadores).
+- **Puntos GPS:** el celular envía uno cada 15 s (o antes, mínimo 5 s, si el trabajador se movió más de 25 m), y el servidor descarta los casi idénticos (menos de 5 s y 10 m). Sin esto el GPS puede avisar cada segundo (~30 GB/año con 30 trabajadores). La app Android 1.0.8 además agrupa los envíos y lee menos cuando el trabajador está quieto (ver **Ahorro de batería**).
 - **Historial del panel:** filtro por fechas (últimos 7 días por defecto), búsqueda en el servidor y paginación de 50 en 50; **Exportar CSV** descarga todo el rango filtrado.
 - **Retención de puntos GPS (opcional):** `npm run purge-historial -- --days=90` solo **cuenta**; con `--apply` borra. O define `RETENCION_UBICACIONES_DIAS=90` y el servidor lo hace solo cada 24 h. Es irreversible: haz un respaldo antes.
 - Entrada y salida se guardan en una transacción: si algo falla, no queda nada a medias.
@@ -128,7 +128,7 @@ JAVA_HOME="C:/Program Files/Android/Android Studio/jbr" ./gradlew assembleDebug 
 ```
 Cada trabajador debe conceder en el celular: ubicación precisa, **"Permitir todo el tiempo"**, notificaciones y batería "sin restricciones" (la app los guía paso a paso antes de la primera entrada). Xiaomi/Redmi/POCO además necesitan "Inicio automático".
 
-**Alertas del supervisor en la app Android:** viajan en la respuesta de cada envío de ubicación (cada ~15 s). El servicio las muestra como notificación del sistema (suena y vibra, también con la pantalla apagada). Al tocarla, la app abre la alerta y la marca como leída. Una alerta sin leer se entrega durante 15 minutos; si el celular no tiene internet en ese momento, la recibe al reconectar. No usa Firebase.
+**Alertas del supervisor en la app Android:** viajan en la respuesta de cada envío de ubicación (cada ~15 s; desde la app 1.0.8, cerca de un minuto). El servicio las muestra como notificación del sistema (suena y vibra, también con la pantalla apagada). Al tocarla, la app abre la alerta y la marca como leída. Una alerta sin leer se entrega durante 15 minutos; si el celular no tiene internet en ese momento, la recibe al reconectar. No usa Firebase.
 
 **APK firmado (versión de entrega):**
 - La llave de firma está en `C:\Users\LENOVO\SMI-GPS-llave\` (`smi-gps.jks` + `claves.txt` con las contraseñas). **Respáldala en al menos dos lugares fuera de la computadora** (USB, gestor de contraseñas). Si se pierde, no se podrá actualizar la app: habría que desinstalarla y reinstalarla en todos los celulares. Nunca se sube a git (`client/android/.gitignore`).
@@ -153,6 +153,8 @@ Cada trabajador debe conceder en el celular: ubicación precisa, **"Permitir tod
 `minVersionCode` es la versión mínima aceptable: quien tenga una menor ve el aviso en rojo y **no puede cerrarlo** (no bloquea la app ni detiene el rastreo). Usa `0` o `1` si no quieres forzar a nadie. No hace falta reiniciar el servidor (se relee cada 30 s). La ruta del archivo se puede cambiar con `ANDROID_VERSION_FILE` en `service/.env`.
 El aviso existe solo desde la versión 1.0.1 de la app: quien tenga la 1.0.0 debe instalar la 1.0.1 una vez a mano.
 
+**Enlace de descarga y web instalada:** el service worker de la web respondía con la app a cualquier dirección, también a `/descargas/smi-gps.apk`: en un navegador que ya había entrado a la web no se descargaba nada. Se excluyen `/descargas/` y `/api/` (`navigateFallbackDenylist` en `client/vite.config.ts`). **Despliega la web antes de publicar un APK nuevo**; los teléfonos con la web ya guardada deben aceptar el aviso de actualización o cerrar todas las pestañas del sitio (mientras tanto sirve una pestaña de incógnito).
+
 ### Un turno, un dispositivo
 Cada instalación de la app (o navegador) genera un identificador y lo envía en la cabecera `X-Device-Id`. Al marcar la entrada, el turno queda **atado a ese dispositivo** (`RegistroAsistencia.dispositivo_id`): solo él puede enviar la ubicación del turno. Si el mismo usuario abre la app en otro teléfono, ese teléfono muestra "Su turno está activo en otro dispositivo", **no registra ubicación** y su servicio se detiene; el servidor responde `409/403 OTRO_DISPOSITIVO`. Así dos celulares con el mismo usuario no mezclan sus puntos y no se puede dejar un teléfono quieto mientras el trabajador se mueve con otro.
 
@@ -165,9 +167,48 @@ Qué esperar:
 
 ### Prueba de vida con retos aleatorios (anti-video)
 El parpadeo fijo se podía esquivar con un video grabado frente a la cámara. Ahora, antes de capturar el rostro, la app pide una **secuencia distinta cada vez** de 3 movimientos tomados al azar entre: girar la cabeza a la izquierda, girar a la derecha, sonreír, abrir la boca y parpadear dos veces (60 secuencias posibles). Solo cuenta lo que ocurre **después** de pedirlo y con el rostro antes en reposo, con 4,5 s para cada movimiento. Al final se pide mirar de frente y quieto, y esa imagen es la que se compara con el rostro registrado. Además se compara la cara del inicio con la del final de la prueba (si cambia la persona o la foto, se rechaza).
-- **Intentos fallidos:** desde el 2.º fallo seguido se guarda en **Alertas de fraude** ("Falla en la prueba de vida") con la foto del intento (así se ve un video o una pantalla frente a la cámara); al 3.º se bloquea 2 minutos. Los intentos se cuentan en el celular por 10 minutos.
+- **Intentos fallidos:** desde la app 1.0.8, **cada** fallo se guarda en **Alertas de fraude** ("Falla en la prueba de vida") con la foto del intento (así se ve un video o una pantalla frente a la cámara); al 3.º se bloquea 2 minutos. Los intentos se cuentan en el celular por 10 minutos. Las apps anteriores siguen avisando desde el 2.º.
+- **Diagnóstico:** junto a cada fallo se guarda, después de `|`, la etapa (`inicio`, `reposo` entre gestos, `gesto`, `final`), el gesto pedido, qué le faltó, las lecturas (ojos 0 abiertos – 1 cerrados, giro, boca, sonrisa), el máximo alcanzado, los fotogramas por segundo, la versión de la app y el teléfono. Sirve para decidir con datos si algún límite debe cambiar (hoy no se ha cambiado ninguno).
+- **Ayuda al trabajador:** la app muestra una guía animada de los gestos la primera vez (botón **Ver cómo se hace**), la carita del gesto pedido durante la prueba y qué corregir ("Abra bien los ojos", "Mire de frente a la cámara"…).
 - **Límite honesto:** frena el video grabado y el cambio de rostro, pero un atacante que reproduzca a mano clips cortos de cada movimiento según lo que pida la pantalla todavía podría intentarlo. Las capas posibles son un detector de pantallas con IA y comparar el rostro en el servidor.
 - **Cómo comprobar el sentido del giro:** abre la web en el celular con `?debug` al final de la dirección (por ejemplo `https://asistencia.smi-peru.com/?debug`) y mira la línea de "giro" bajo la cámara: de frente marca ≈ 0.50 y al girar hacia **su izquierda** debe **subir** (≈ 0.65 o más). Si en un teléfono ocurre lo contrario, cambia `INVERTIR_GIRO` a `true` en `client/src/services/eyeBlink.ts`. La app instalada (APK) usa exactamente el mismo código.
+
+### Autorización de la oficina (app 1.0.8 o posterior y web)
+Tras 3 intentos fallidos de la prueba de vida (o si la verificación no carga en el celular), el trabajador puede tocar **Pedir autorización a la oficina**. La app envía una foto, la ubicación y el tipo de marcación (entrada, salida, inicio o fin de almuerzo).
+- El servidor **compara el rostro** con el registrado: si no coincide, no se crea la solicitud y queda como "Suplantación de rostro". Quien no tiene el rostro registrado no puede pedirla. La entrada exige la misma precisión de GPS que una marcación normal.
+- En el panel (**solo administradores**) aparece un aviso, el número en la pestaña del navegador y la pestaña **Autorizaciones**, con la foto registrada junto a la de la solicitud, la similitud, la ubicación y los fallos. **Alguien debe tener el panel abierto** a las horas de marcación: no envía avisos al celular de la oficina.
+- Al **aprobar**, el servidor registra la marcación con la **hora de la solicitud** y la anota como autorizada (`metodo_validacion = autorizacion_oficina` en las entradas; nota en `RegistroAsistencia.notas`; el historial la marca "Autorizado por oficina"). Los almuerzos autorizados se identifican en la lista de solicitudes. Al **rechazar** se pide un motivo, que ve el trabajador.
+- Una solicitud pendiente por trabajador; vence a los **30 minutos**. Si mientras tanto el trabajador marca con la prueba normal, la solicitud se anula sola.
+- El trabajador debe **mantener la app abierta**: el rastreo GPS de una entrada autorizada empieza cuando su app se entera (consulta cada 10 s o al abrirla).
+- Las solicitudes y sus fotos entran en los plazos de borrado (`RETENCION_FOTOS_DIAS`, `RETENCION_REGISTROS_DIAS`), en la copia y eliminación de datos del trabajador y en `limpiar-pruebas`.
+
+**Puesta en marcha (en este orden):**
+1. Probar primero en una base de pruebas: `npm run migrate-autorizaciones` y aprobar una solicitud de cada tipo (las consultas de aprobación solo se han probado con una base simulada).
+2. En producción: respaldo de la base, `git pull`, `npm run migrate-autorizaciones -- --dry-run`, luego sin `--dry-run`, `cd client && npm run build`, `pm2 restart smi-gps`. Sin la tabla el servidor funciona como antes y la app no ofrece pedir autorización.
+3. Compilar el APK **1.0.8** (`versionCode 9`), subirlo y actualizar `version.json`. Hasta que actualicen, quienes tengan la app anterior siguen marcando igual, sin la guía ni el botón de autorización. La web (PWA) se actualiza al desplegar.
+
+### Alertas agrupadas en el panel
+La pestaña **Alertas de fraude** muestra **una fila por trabajador, día y tipo de evento**, con la cantidad, el horario y un resumen; **Ver intentos** abre cada uno con su foto. No se borra ni se cambia ningún registro (`GET /api/attendance/fraud-groups`; considera las 3000 alertas más recientes).
+
+### Recordatorios de marcación (almuerzo y salida)
+En el panel, **Calendario y avisos → Recordatorios de marcación**, el administrador fija la hora de salida a almorzar y la de salida del trabajo (lunes a viernes, sábado y domingo) y si se avisa al cumplirse los minutos de almuerzo (`ALMUERZO_MINUTOS`). Sin nada guardado no se envía ningún aviso.
+- Solo llegan a quien está **en turno** y todavía no marcó. Cada aviso se envía a la hora y se repite **una vez a los 15 minutos**. No se avisa a quien entró después de la hora, ni a quien tiene una autorización de la oficina pendiente para esa marcación. No hay recordatorio de entrada.
+- El fin del almuerzo cuenta desde que **cada trabajador** lo inició, no por la hora del reloj.
+- Las horas son las de la zona `BUSINESS_TZ` (por defecto `America/Lima`) y son las mismas para toda la empresa (no por proyecto ni por trabajador). Los feriados trabajados usan el horario del día de la semana que corresponda.
+- **Cómo llegan:** igual que las alertas del supervisor. La app Android (también la ya instalada, **sin actualizar el APK**) los recibe con el envío de ubicación del turno y muestra una notificación con sonido (título "Alerta de SMI"); la app nueva rotula el cartel como "Recordatorio de marcación". En el navegador hace falta haber activado las notificaciones. Si el celular está sin internet, con la ubicación apagada o con la app cerrada a la fuerza, el aviso no llega; un servidor apagado más de 10 minutos tampoco envía los atrasados.
+- Cada recordatorio queda en `AlertasEnviadas` (columna `recordatorio`) y se borra con los mismos plazos que las demás alertas.
+
+**Puesta en marcha:** primero en una base de pruebas (solo se ha probado con una base simulada). En producción: respaldo, `git pull`, `npm run migrate-recordatorios -- --dry-run`, luego sin `--dry-run` (requiere las tablas de `npm run migrate-push`), `cd client && npm run build`, `pm2 restart smi-gps` y guardar las horas en el panel.
+
+### Ahorro de batería (app Android 1.0.8)
+- **Envíos agrupados:** el teléfono guarda cada punto con su hora y envía como mucho **una vez por minuto** (antes, uno por cada lectura, cada ~15 s). Se envía de inmediato al apagar o encender la ubicación, al empezar a moverse y antes de marcar la salida.
+- **Quieto:** tras **3 minutos** sin alejarse más de ~50 m (o más que el margen de error del GPS) pide **una lectura por minuto**, con la misma precisión. Apenas una lectura muestra movimiento vuelve a cada 15 s; esa detección puede tardar hasta un minuto, y en ese primer minuto el recorrido tiene menos detalle (`RitmoGps.java`).
+- **Efecto en el panel:** el mapa en vivo, las alertas y los recordatorios llegan con hasta ~1 minuto de retraso. "Sin señal" y los huecos del recorrido pasan de 90 s a **3 minutos** (también para las apps anteriores). El aviso en Alertas de fraude sigue en `SIN_SENAL_ALERTA_MIN` (5 min).
+- **Sin medir todavía:** no se sabe cuánta batería ahorra. Antes de repartir el APK, instalarlo en un teléfono, hacer un turno normal (con tramos quieto, a pie y en vehículo) y comparar en Ajustes → Batería el porcentaje y el tiempo de GPS y "bloqueos de inactivación" de la app, además del recorrido en el panel.
+- **Orden:** desplegar el servidor y la web **antes** de repartir el APK 1.0.8; si no, el panel anterior marcaría "sin señal" a quien está quieto. No aplica a iPhone ni a la web (PWA).
+
+### Pantalla de permisos (app Android 1.0.8)
+Tocar el círculo (o el texto) de un paso pendiente abre ese permiso en Android. El check aparece solo cuando el teléfono confirma que quedó concedido.
 
 ### Almuerzo dentro del turno (app 1.0.3 o posterior y web)
 Durante un turno activo el trabajador toca **Iniciar almuerzo** y, al volver, **Terminar almuerzo**; ambos momentos exigen verificación facial con prueba de vida y guardan foto y similitud. El **GPS NO se detiene**: sigue registrándose igual (en la web y en el servicio de Android). Las horas del turno **no se descuentan** (solo se registra el almuerzo).
@@ -215,10 +256,10 @@ Cada cliente tiene su propia instalación, así que su plan se fija en su `servi
 - **Límites:** no controla el pago ni el vencimiento del plan (eso se gestiona aparte), y quien tenga acceso al servidor puede cambiar el número.
 
 ### Salida forzada por un administrador
-En **Personal en Turno** (y en el historial, en los turnos activos) el administrador tiene el botón **Forzar salida**: cierra el turno **sin verificación facial ni foto**, con la hora actual y la última ubicación conocida del trabajador. Pide un motivo obligatorio (3 a 200 caracteres) que queda en `RegistroAsistencia.notas` como `SALIDA FORZADA por <código> <nombre>: <motivo>`; el historial la marca con la etiqueta "Forzada". Solo el rol `administrador` puede hacerlo (no los supervisores) y no se puede deshacer. Si el trabajador tiene la app abierta se entera al instante; la app Android además muestra una notificación y detiene su servicio de GPS en el siguiente envío (hasta ~15 s).
+En **Personal en Turno** (y en el historial, en los turnos activos) el administrador tiene el botón **Forzar salida**: cierra el turno **sin verificación facial ni foto**, con la hora actual y la última ubicación conocida del trabajador. Pide un motivo obligatorio (3 a 200 caracteres) que queda en `RegistroAsistencia.notas` como `SALIDA FORZADA por <código> <nombre>: <motivo>`; el historial la marca con la etiqueta "Forzada". Solo el rol `administrador` puede hacerlo (no los supervisores) y no se puede deshacer. Si el trabajador tiene la app abierta se entera al instante; la app Android además muestra una notificación y detiene su servicio de GPS en el siguiente envío (hasta ~15 s; desde la app 1.0.8, cerca de un minuto).
 
 ### Recorrido de un turno (panel de administración)
-En **Historial de asistencia** (botón "Ver recorrido" de cada turno) y en **Personal en Turno** (turnos activos) se abre un visor con el recorrido sobre el mapa: tramos verdes dentro de una estación y naranjas fuera de zona, huecos de señal punteados (más de 90 s sin ubicación), distancia, tiempo dentro/fuera y reproducción del recorrido. Un turno activo se actualiza solo cada 15 s. Lee los puntos de `HistorialUbicaciones`, por lo que **desaparecen del visor cuando la retención los borra**. Antes de usarlo en producción ejecuta una vez `npm run migrate-historial` (crea el índice `IX_HistorialUbicaciones_asistencia`; con muchos puntos tarda un poco).
+En **Historial de asistencia** (botón "Ver recorrido" de cada turno) y en **Personal en Turno** (turnos activos) se abre un visor con el recorrido sobre el mapa: tramos verdes dentro de una estación y naranjas fuera de zona, huecos de señal punteados (más de 3 minutos sin ubicación), distancia, tiempo dentro/fuera y reproducción del recorrido. Un turno activo se actualiza solo cada 15 s. Lee los puntos de `HistorialUbicaciones`, por lo que **desaparecen del visor cuando la retención los borra**. Antes de usarlo en producción ejecuta una vez `npm run migrate-historial` (crea el índice `IX_HistorialUbicaciones_asistencia`; con muchos puntos tarda un poco).
 
 Pendiente para producción: subir el servidor con los endpoints nuevos (`/api/location/batch` y `/api/location/track-token`) y publicar el APK en una ruta del dominio.
 

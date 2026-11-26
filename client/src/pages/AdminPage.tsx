@@ -5,12 +5,16 @@ import { GoogleLiveMap } from '../components/GoogleLiveMap';
 import { StationPlacementPanel } from '../components/StationPlacementPanel';
 import { RouteHistoryModal } from '../components/RouteHistoryModal';
 import { CalendarioPanel } from '../components/CalendarioPanel';
+import { RecordatoriosPanel } from '../components/RecordatoriosPanel';
+import { SIN_SENAL_SEG } from '../services/senal';
 import { marcaNombre } from '../brand';
 import { GestionTrabajadorModal } from '../components/GestionTrabajadorModal';
 import { EnrolFaceModal } from '../components/EnrolFaceModal';
 import { AuthLayout } from '../components/AuthLayout';
 import { BrandLogo } from '../components/BrandLogo';
 import { AuthImage } from '../components/AuthImage';
+import { AlertasPanel, rutaFotoAlerta } from '../components/AlertasPanel';
+import { AutorizacionesPanel } from '../components/AutorizacionesPanel';
 import type {
   EstacionTrabajo,
   Proyecto,
@@ -18,11 +22,11 @@ import type {
   DatosTrabajadorEnVivo,
   RegistroAsistencia,
   Usuario,
-  AuditoriaFraudeFacial,
+  GrupoAlertas,
+  AutorizacionPanel,
 } from '../types';
 import {
   MapPin,
-  ShieldCheck,
   Download,
   Search,
   Plus,
@@ -36,7 +40,6 @@ import {
   Link,
   RefreshCw,
   ScanFace,
-  ShieldAlert,
   UserCheck,
 } from 'lucide-react';
 
@@ -49,19 +52,6 @@ const daysAgo = (n: number) => {
   return d;
 };
 const LOGS_PAGE_SIZE = 50;
-
-// Nombre legible de los tipos de evento de la auditoría
-const etiquetaEvento = (tipo: string) =>
-  ({
-    SUPLANTACION_ROSTRO: 'Suplantación de rostro',
-    FALLA_PRUEBA_VIDA: 'Falla en la prueba de vida',
-    INTENTO_DIA_NO_LABORABLE: 'Intento en día no laborable',
-    GPS_APAGADO: 'Apagó la ubicación (GPS)',
-    GPS_REACTIVADO: 'Reactivó la ubicación (GPS)',
-    SIN_SENAL_GPS: 'Sin señal GPS en turno',
-  } as Record<string, string>)[tipo] || tipo.charAt(0) + tipo.slice(1).toLowerCase().replace(/_/g, ' ');
-// Eventos que no son de reconocimiento facial: no tienen "similitud" que mostrar
-const EVENTOS_SIN_SIMILITUD = ['GPS_APAGADO', 'GPS_REACTIVADO', 'SIN_SENAL_GPS', 'INTENTO_DIA_NO_LABORABLE'];
 
 // Mensajes rápidos para las alertas al celular del trabajador
 const ALERT_PRESETS = [
@@ -135,7 +125,13 @@ export const AdminPage: React.FC = () => {
   const [alertSending, setAlertSending] = useState<boolean>(false);
   const [clockOffsetMs, setClockOffsetMs] = useState<number>(0); // reloj del servidor - reloj de este equipo
   const [workersList, setWorkersList] = useState<Usuario[]>([]);
-  const [fraudLogs, setFraudLogs] = useState<AuditoriaFraudeFacial[]>([]);
+  const [fraudGroups, setFraudGroups] = useState<GrupoAlertas[]>([]);
+  // Solicitudes de autorización de marcación (las resuelve la oficina)
+  const [autorizaciones, setAutorizaciones] = useState<{ habilitado: boolean; pendientes: AutorizacionPanel[]; resueltas: AutorizacionPanel[] }>({
+    habilitado: false,
+    pendientes: [],
+    resueltas: [],
+  });
   const [summary, setSummary] = useState<ResumenDashboard>({
     totalTrabajadores: 0,
     activosConteo: 0,
@@ -163,7 +159,7 @@ export const AdminPage: React.FC = () => {
   const [showEnrolModal, setShowEnrolModal] = useState<boolean>(false);
 
   // Tabs & filters
-  const [activeTab, setActiveTab] = useState<'map' | 'logs' | 'workers' | 'fraud' | 'stations' | 'calendar'>('map');
+  const [activeTab, setActiveTab] = useState<'map' | 'logs' | 'workers' | 'auth' | 'fraud' | 'stations' | 'calendar'>('map');
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [selectedWorker, setSelectedWorker] = useState<DatosTrabajadorEnVivo | null>(null);
 
@@ -319,7 +315,7 @@ export const AdminPage: React.FC = () => {
       const [stationsData, usersData, fraudData, proyectosData, planData] = await Promise.all([
         api.getWorkstations(),
         api.getUsers(),
-        api.getFraudLogs(),
+        api.getFraudGroups(),
         api.getProyectos().catch(() => [] as Proyecto[]), // un servidor sin la función no debe romper el panel
         api.getPlan().catch(() => null),
       ]);
@@ -327,7 +323,7 @@ export const AdminPage: React.FC = () => {
       setProyectos(proyectosData);
       setPlan(planData);
       setWorkersList(usersData);
-      setFraudLogs(fraudData);
+      setFraudGroups(fraudData);
     } catch (err) {
       console.error('Error cargando listados del panel admin:', err);
     } finally {
@@ -335,6 +331,33 @@ export const AdminPage: React.FC = () => {
       setLoading(false);
     }
   }, []);
+
+  const loadAutorizaciones = useCallback(async () => {
+    try {
+      setAutorizaciones(await api.getAutorizaciones());
+    } catch (err) {
+      console.error('Error cargando las solicitudes de autorización:', err);
+    }
+  }, []);
+
+  // Se consultan al entrar y cada 30 s (además de los avisos en vivo), para que ninguna pase desapercibida
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+    loadAutorizaciones();
+    const t = setInterval(loadAutorizaciones, 30_000);
+    return () => clearInterval(t);
+  }, [isAdminAuthenticated, loadAutorizaciones]);
+
+  // El número de solicitudes pendientes se ve también en la pestaña del navegador
+  const porAutorizar = autorizaciones.pendientes.length;
+  useEffect(() => {
+    if (!porAutorizar) return;
+    const titulo = document.title;
+    document.title = `(${porAutorizar}) Autorizar · ${titulo}`;
+    return () => {
+      document.title = titulo;
+    };
+  }, [porAutorizar]);
 
   // Parámetros del historial según los filtros elegidos (las fechas se interpretan en hora local)
   const logsParams = useCallback(() => {
@@ -487,19 +510,28 @@ export const AdminPage: React.FC = () => {
       const ahora = new Date().toLocaleTimeString();
       const nombre = liveWorkersRef.current.find((w) => w.usuario_id === fraudEvent?.usuarioId)?.nombre_usuario || 'Un trabajador';
       const textos: Record<string, string> = {
+        FALLA_PRUEBA_VIDA: `${nombre} no pudo completar la prueba de vida (${ahora})`,
+        SUPLANTACION_ROSTRO: `ALERTA: el rostro no coincide en un intento de ${nombre} (${
+          fraudEvent?.similitudObtenida ? Math.round(fraudEvent.similitudObtenida) + '% de similitud' : 'sin coincidencia'
+        }) a las ${ahora}`,
         GPS_APAGADO: `ALERTA: ${nombre} apagó la ubicación de su celular durante el turno (${ahora})`,
         SIN_SENAL_GPS: `ALERTA: ${nombre} lleva varios minutos sin enviar ubicación (${ahora})`,
         GPS_REACTIVADO: `${nombre} volvió a activar la ubicación de su celular (${ahora})`,
         INTENTO_DIA_NO_LABORABLE: `ALERTA: ${nombre} intentó usar la app en un día no laborable (${ahora})`,
       };
       setRecentNotification({
-        texto:
-          textos[fraudEvent?.tipoEvento] ||
-          `ALERTA: Intento de suplantación facial detectado (${
-            fraudEvent?.similitudObtenida ? Math.round(fraudEvent.similitudObtenida) + '%' : 'No coincide'
-          }) a las ${ahora}`,
+        texto: textos[fraudEvent?.tipoEvento] || `Nueva alerta de ${nombre} (${ahora})`,
         fecha: ahora,
       });
+    });
+
+    // Solicitudes de autorización: nueva, cancelada o resuelta
+    socket.on('authorization_event', (d: any) => {
+      loadAutorizaciones();
+      if (d?.accion !== 'nueva') return;
+      const ahora = new Date().toLocaleTimeString();
+      const nombre = liveWorkersRef.current.find((w) => w.usuario_id === d?.usuarioId)?.nombre_usuario || 'Un trabajador';
+      setRecentNotification({ texto: `${nombre} pide autorización para marcar (${ahora})`, fecha: ahora });
     });
 
     // El trabajador abrió/leyó la alerta que se le envió
@@ -541,13 +573,14 @@ export const AdminPage: React.FC = () => {
       socket.off('location_ping');
       socket.off('attendance_event');
       socket.off('fraud_alert');
+      socket.off('authorization_event');
       socket.off('user_face_enrolled');
       socket.off('alerta_leida');
       socket.off('workstations_updated');
       socket.off('workstations_deleted');
       socket.off('almuerzo_event');
     };
-  }, [isAdminAuthenticated, loadLive, loadHeavy, refreshLists, scheduleHeavyReload]);
+  }, [isAdminAuthenticated, loadLive, loadHeavy, refreshLists, scheduleHeavyReload, loadAutorizaciones]);
 
   // Envía la alerta al celular del trabajador (llega aunque tenga la pantalla apagada)
   const handleSendAlert = async () => {
@@ -558,7 +591,7 @@ export const AdminPage: React.FC = () => {
       const hora = new Date().toLocaleTimeString();
       let texto: string;
       if (r.appNativa && r.dispositivos === 0) {
-        texto = `Alerta enviada a ${r.trabajador}: le aparecerá en su celular en unos 15 segundos (${hora})`;
+        texto = `Alerta enviada a ${r.trabajador}: le aparecerá en su celular en cerca de un minuto (${hora})`;
       } else if (r.dispositivos === 0 && !r.appAbierta) {
         texto = `${r.trabajador} no tiene las alertas activadas en su celular: solo la verá si abre la app (${hora})`;
       } else if (r.dispositivos > 0 && r.entregadosAlServicioPush === 0 && !r.appAbierta) {
@@ -647,12 +680,6 @@ export const AdminPage: React.FC = () => {
       w.cargo.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const filteredFraudLogs = fraudLogs.filter(
-    (f) =>
-      (f.nombre_usuario || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (f.codigo_empleado || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (f.tipo_evento || '').toLowerCase().includes(searchTerm.toLowerCase())
-  );
 
   // Exporta TODO el rango filtrado (no solo la página visible), pidiéndolo al servidor por tandas
   const handleExportCSV = async () => {
@@ -1131,6 +1158,20 @@ export const AdminPage: React.FC = () => {
               </div>
             )}
 
+            {/* Solicitudes esperando respuesta: se ven desde cualquier pestaña */}
+            {porAutorizar > 0 && activeTab !== 'auth' && (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border border-amber-300 border-l-4 border-l-amber-600 bg-amber-50 px-4 py-3 text-sm text-amber-950" role="alert">
+                <span className="font-semibold">
+                  {porAutorizar === 1
+                    ? `${autorizaciones.pendientes[0].nombre_usuario} espera autorización para marcar.`
+                    : `${porAutorizar} trabajadores esperan autorización para marcar.`}
+                </span>
+                <button type="button" onClick={() => setActiveTab('auth')} className="btn-primary btn-sm">
+                  Revisar
+                </button>
+              </div>
+            )}
+
             {/* Indicadores */}
             <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-5">
               {[
@@ -1154,9 +1195,10 @@ export const AdminPage: React.FC = () => {
                   { id: 'map', label: 'Mapa en tiempo real' },
                   { id: 'logs', label: `Historial de asistencia (${logsTotal})` },
                   { id: 'workers', label: `Personal y biometría (${workersList.length})` },
-                  { id: 'fraud', label: 'Alertas de fraude', badge: fraudLogs.length },
+                  ...(autorizaciones.habilitado ? [{ id: 'auth', label: 'Autorizaciones', badge: porAutorizar } as const] : []),
+                  { id: 'fraud', label: 'Alertas de fraude', badge: fraudGroups.length },
                   { id: 'stations', label: `Estaciones (${workstations.length})` },
-                  { id: 'calendar', label: 'Calendario' },
+                  { id: 'calendar', label: 'Calendario y avisos' },
                 ] as const
               ).map((t) => (
                 <button
@@ -1178,7 +1220,7 @@ export const AdminPage: React.FC = () => {
 
             {/* Búsqueda y acciones de la pestaña */}
             <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-              {activeTab !== 'stations' && activeTab !== 'calendar' ? (
+              {activeTab !== 'stations' && activeTab !== 'calendar' && activeTab !== 'auth' ? (
               <div className="relative w-full sm:w-80">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
@@ -1418,7 +1460,7 @@ export const AdminPage: React.FC = () => {
 
                             {isActive && (() => {
                               const seg = worker.segundos_sin_ping ?? 0;
-                              const sinSenal = seg > 90; // más de 90 s sin ningún punto GPS
+                              const sinSenal = seg > SIN_SENAL_SEG; // demasiado tiempo sin ningún punto GPS
                               const imprecisa = Boolean(worker.gps_imprecisa) || (worker.precision ?? 0) > 50;
                               const bat = worker.bateria ?? null;
                               const cargando = Boolean(worker.cargando);
@@ -1723,6 +1765,12 @@ export const AdminPage: React.FC = () => {
                                   <span className="text-xs text-slate-400 mt-0.5">
                                     {log.verificacion_facial_exitosa ? 'Verificado' : 'Alerta'}
                                   </span>
+                                  {/* sin prueba de vida: la aprobó la oficina (entrada o salida) */}
+                                  {(log.metodo_validacion === 'autorizacion_oficina' || /autorizada por la oficina/i.test(log.notas || '')) && (
+                                    <span className="tag mt-1 border-amber-300 bg-amber-50 text-amber-900" title={log.notas || ''}>
+                                      Autorizado por oficina
+                                    </span>
+                                  )}
                                 </div>
                               ) : (
                                 <span className="text-xs text-slate-400 italic">No requerida</span>
@@ -1990,144 +2038,42 @@ export const AdminPage: React.FC = () => {
               </div>
             )}
 
-            {/* Tab: Alertas de Fraude */}
+            {/* Tab: Alertas de Fraude (agrupadas por trabajador, día y tipo) */}
             {activeTab === 'fraud' && (
-              <div className="space-y-4">
-                <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 rounded-xl bg-rose-600 text-white flex items-center justify-center flex-shrink-0 shadow">
-                      <ShieldAlert className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-xs font-bold text-rose-950">
-                        Auditoría de Intentos de Fraude y Suplantación Biométrica
-                      </h3>
-                      <p className="text-xs text-rose-700 mt-0.5">
-                        Registros en vivo cuando un intento de marcación no supera el umbral de coincidencia facial (&lt; 60%) o falla la prueba de vida (parpadeo EAR).
-                      </p>
-                    </div>
-                  </div>
-                  <span className="px-3 py-1 bg-rose-600 text-white font-bold text-xs rounded-xl shadow-sm">
-                    {fraudLogs.length} Alerta{fraudLogs.length === 1 ? '' : 's'}
-                  </span>
-                </div>
+              <AlertasPanel
+                grupos={fraudGroups}
+                busqueda={searchTerm}
+                onVerFoto={(a) =>
+                  setPhotoPreview({
+                    url: rutaFotoAlerta(a),
+                    workerName: a.nombre_usuario,
+                    type: 'entrada',
+                    date: a.fecha_intento,
+                    similarity: a.tipo_evento === 'SUPLANTACION_ROSTRO' ? a.similitud_obtenida : null,
+                  })
+                }
+              />
+            )}
 
-                {filteredFraudLogs.length === 0 ? (
-                  <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-sm">
-                    <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-3">
-                      <ShieldCheck className="w-8 h-8" />
-                    </div>
-                    <h4 className="text-sm font-bold text-slate-800">Cero Intentos de Fraude</h4>
-                    <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                      No se han detectado suplantaciones ni desajustes biométricos. Todas las marcaciones han cumplido los criterios de verificación 1:1.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs text-slate-600">
-                        <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase font-semibold text-xs tracking-wider">
-                          <tr>
-                            <th className="px-4 py-3">Fecha y Hora</th>
-                            <th className="px-4 py-3">Trabajador Afectado</th>
-                            <th className="px-4 py-3">Tipo de Evento</th>
-                            <th className="px-4 py-3 text-center">Similitud Obtenida</th>
-                            <th className="px-4 py-3 text-center">Foto del Intento</th>
-                            <th className="px-4 py-3">Ubicación GPS</th>
-                            <th className="px-4 py-3">Detalle / Notas</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {filteredFraudLogs.map((log) => (
-                            <tr key={log.id} className="hover:bg-rose-50/30 transition">
-                              <td className="px-4 py-3 font-mono text-slate-700 whitespace-nowrap">
-                                {new Date(log.fecha_intento).toLocaleString([], {
-                                  dateStyle: 'short',
-                                  timeStyle: 'medium',
-                                })}
-                              </td>
-                              <td className="px-4 py-3">
-                                <div className="font-bold text-slate-900">{log.nombre_usuario || `Usuario #${log.usuario_id}`}</div>
-                                <span className="text-xs font-mono text-slate-500">{log.codigo_empleado}</span>
-                              </td>
-                              <td className="px-4 py-3">
-                                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-300">
-                                  {etiquetaEvento(log.tipo_evento)}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 text-center">
-                                {EVENTOS_SIN_SIMILITUD.includes(log.tipo_evento) ? (
-                                  <span className="text-xs text-slate-400">—</span>
-                                ) : (
-                                  <>
-                                    <span className="font-bold text-xs text-rose-600 font-mono">
-                                      {log.similitud_obtenida !== null && log.similitud_obtenida !== undefined
-                                        ? `${Math.round(log.similitud_obtenida)}%`
-                                        : '0%'}
-                                    </span>
-                                    <p className="text-xs text-slate-400">Mínimo: 60%</p>
-                                  </>
-                                )}
-                              </td>
-                              <td className="px-4 py-3 text-center">
-                                {log.tiene_foto_intento ? (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setPhotoPreview({
-                                        url: `/photos/fraud/${log.id}?v=${Date.parse(log.fecha_intento)}`,
-                                        workerName: log.nombre_usuario,
-                                        type: 'entrada',
-                                        date: log.fecha_intento,
-                                        similarity: log.similitud_obtenida,
-                                      })
-                                    }
-                                    className="inline-flex border border-slate-300 bg-white p-0.5 transition-colors hover:border-brand-600"
-                                  >
-                                    <AuthImage
-                                      path={`/photos/fraud/${log.id}?v=${Date.parse(log.fecha_intento)}`}
-                                      alt="Intento Fraudulento"
-                                      className="w-10 h-10 object-cover rounded-md"
-                                    />
-                                  </button>
-                                ) : (
-                                  <span className="text-xs text-slate-400 italic">Sin foto</span>
-                                )}
-                              </td>
-                              <td className="px-4 py-3 font-mono text-xs text-slate-600">
-                                {log.latitud && log.longitud ? (
-                                  <a
-                                    href={`https://www.google.com/maps?q=${log.latitud},${log.longitud}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-blue-600 hover:underline flex items-center gap-1"
-                                  >
-                                    <MapPin className="w-3 h-3" />
-                                    <span>
-                                      {log.latitud.toFixed(4)}, {log.longitud.toFixed(4)}
-                                    </span>
-                                  </a>
-                                ) : (
-                                  '—'
-                                )}
-                              </td>
-                              <td className="px-4 py-3 text-slate-600 max-w-xs truncate" title={log.notas || ''}>
-                                {log.notas || 'Rostro no coincide con el descriptor enrolado'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
+            {activeTab === 'auth' && (
+              <AutorizacionesPanel
+                pendientes={autorizaciones.pendientes}
+                resueltas={autorizaciones.resueltas}
+                onResuelta={() => {
+                  loadAutorizaciones();
+                  scheduleHeavyReload();
+                  loadLive();
+                }}
+              />
             )}
 
             {activeTab === 'calendar' && (
-              <CalendarioPanel
-                trabajadores={workersList.filter((w) => w.rol === 'trabajador' && w.activo).map((w) => ({ id: w.id, nombre: w.nombre, codigo_empleado: w.codigo_empleado }))}
-              />
+              <div className="space-y-4">
+                <RecordatoriosPanel />
+                <CalendarioPanel
+                  trabajadores={workersList.filter((w) => w.rol === 'trabajador' && w.activo).map((w) => ({ id: w.id, nombre: w.nombre, codigo_empleado: w.codigo_empleado }))}
+                />
+              </div>
             )}
 
             {/* Tab 3: Workstations Config */}

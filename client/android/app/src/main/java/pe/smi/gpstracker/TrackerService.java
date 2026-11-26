@@ -18,6 +18,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.IBinder;
+import android.os.SystemClock;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
@@ -40,6 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * - START_STICKY: si Android lo cierra por memoria, lo vuelve a crear.
  * - Al salir de la app (deslizarla de "recientes") sigue funcionando: no depende de la actividad.
  * - Guarda cada punto en una cola local antes de enviarlo: sin internet no se pierde nada.
+ * - Para gastar menos batería agrupa los envíos y pide el GPS menos seguido cuando el trabajador está quieto (RitmoGps).
  */
 public class TrackerService extends Service {
     static final String ACTION_START = "pe.smi.gpstracker.TRACKER_START";
@@ -56,6 +58,9 @@ public class TrackerService extends Service {
     private final ExecutorService subidas = Executors.newSingleThreadExecutor();
     private final AtomicBoolean subiendo = new AtomicBoolean(false);
     private String textoActual = "";
+    private RitmoGps ritmo = new RitmoGps();
+    private long intervaloMovimientoMs = 15_000L;
+    private volatile long ultimoEnvioEn = 0L; // reloj desde el arranque del celular; 0 = todavía ninguno
 
     static void iniciar(Context ctx) {
         Intent i = new Intent(ctx, TrackerService.class).setAction(ACTION_START);
@@ -123,6 +128,8 @@ public class TrackerService extends Service {
         @Override
         public void run() {
             revisarUbicacion();
+            // Si dejaron de llegar lecturas (p. ej. bajo techo), lo pendiente se envía igual
+            if (corriendo && TrackerStore.get(TrackerService.this).pendientes() > 0) subirSiToca();
             if (vigia != null && corriendo) vigia.postDelayed(this, REVISION_MS);
         }
     };
@@ -201,17 +208,16 @@ public class TrackerService extends Service {
         fused = LocationServices.getFusedLocationProviderClient(this);
         hilo = new HandlerThread("smi-ubicacion");
         hilo.start();
-
-        LocationRequest req = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervaloMs)
-                .setMinUpdateIntervalMillis(Math.min(5000L, intervaloMs))
-                .setWaitForAccurateLocation(false)
-                .build();
+        intervaloMovimientoMs = intervaloMs;
+        ritmo = new RitmoGps(); // se empieza como "en movimiento"
+        ultimoEnvioEn = 0L;     // la primera lectura se envía enseguida
 
         callback = new LocationCallback() {
             @Override
             public void onLocationResult(LocationResult resultado) {
                 TrackerStore store = TrackerStore.get(TrackerService.this);
                 int[] bateria = leerBateria();
+                boolean cambioDeRitmo = false;
                 for (Location loc : resultado.getLocations()) {
                     if (!loc.hasAccuracy()) continue;
                     TrackerStore.Punto p = new TrackerStore.Punto();
@@ -225,12 +231,32 @@ public class TrackerService extends Service {
                     p.bat = bateria[0];
                     p.chg = bateria[1];
                     store.agregar(p);
+                    if (ritmo.lectura(p.lat, p.lng, p.acc, p.vel != null ? p.vel : -1, p.t)) cambioDeRitmo = true;
                 }
-                subir();
+                if (cambioDeRitmo) {
+                    solicitarUbicaciones();
+                    subir(); // p. ej. empezó a moverse: el mapa lo muestra sin esperar
+                    ultimoEnvioEn = SystemClock.elapsedRealtime();
+                } else {
+                    subirSiToca();
+                }
             }
         };
 
+        solicitarUbicaciones();
+    }
+
+    /** Pide (o cambia) la frecuencia del GPS según si está quieto o en movimiento. La precisión es la misma. */
+    private void solicitarUbicaciones() {
+        if (fused == null || callback == null || hilo == null) return;
+        boolean quieto = ritmo.estaQuieto();
+        long cada = quieto ? Math.max(RitmoGps.INTERVALO_QUIETO_MS, intervaloMovimientoMs) : intervaloMovimientoMs;
+        LocationRequest req = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, cada)
+                .setMinUpdateIntervalMillis(quieto ? cada / 2 : Math.min(5000L, cada))
+                .setWaitForAccurateLocation(false)
+                .build();
         try {
+            // Volver a pedir con el mismo callback reemplaza la solicitud anterior
             fused.requestLocationUpdates(req, callback, hilo.getLooper());
         } catch (SecurityException e) {
             TrackerStore.get(this).setLastError("Falta el permiso de ubicación");
@@ -256,6 +282,14 @@ public class TrackerService extends Service {
         }
     }
 
+    /** Envío agrupado: como mucho uno por minuto (cada envío despierta el celular y usa la red). */
+    private void subirSiToca() {
+        long ahora = SystemClock.elapsedRealtime();
+        if (ultimoEnvioEn != 0L && ahora - ultimoEnvioEn < RitmoGps.ENVIO_CADA_MS) return;
+        ultimoEnvioEn = ahora;
+        subir();
+    }
+
     /** Envía la cola en un hilo aparte; si ya hay un envío en curso, no se duplica. */
     private void subir() {
         if (!subiendo.compareAndSet(false, true)) return;
@@ -277,7 +311,7 @@ public class TrackerService extends Service {
                     actualizarNotificacion(TEXTO_UBICACION_APAGADA);
                 } else if (r.tokenInvalido) {
                     actualizarNotificacion("Abra la aplicación para renovar el rastreo");
-                } else if (r.pendientes > 3) {
+                } else if (r.error != null && r.pendientes > 3) {
                     actualizarNotificacion("Sin conexión: " + r.pendientes + " puntos por enviar");
                 } else {
                     actualizarNotificacion("Registrando su ubicación durante el turno");

@@ -25,6 +25,9 @@ import {
 import { nombreFeriado } from './feriados-peru.mjs';
 import { purgarVencidos, MINIMO_DIAS } from './retencion.mjs';
 import { exportarDatos, darDeBaja, eliminarTodo } from './datos-trabajador.mjs';
+import { registrarAutorizaciones, VIGENCIA_MIN } from './autorizaciones.mjs';
+import { registrarRecordatorios } from './recordatorios.mjs';
+import { notaFalloVida, agruparAlertas } from './alertas.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -81,11 +84,14 @@ async function getPool() {
         try { await pool.close(); } catch {}
       }
       pool = await sql.connect(dbConfig);
-      pool.on('error', (err) => {
-        console.error('⚠️ Error en pool SQL Server:', err.message);
-        pool = null;
-      });
-      console.log(`✅ Conexión establecida con base de datos ${dbConfig.database}`);
+      // Al arrancar, varias comprobaciones piden la conexión a la vez y reciben la misma: el aviso se registra una vez
+      if (!pool.listenerCount('error')) {
+        pool.on('error', (err) => {
+          console.error('⚠️ Error en pool SQL Server:', err.message);
+          pool = null;
+        });
+        console.log(`✅ Conexión establecida con base de datos ${dbConfig.database}`);
+      }
     } catch (err) {
       console.error('❌ Error conectando a SQL Server:', err.message);
       pool = null;
@@ -328,7 +334,8 @@ const MSG_OTRO_DISPOSITIVO =
   'Su turno está activo en otro dispositivo. Este teléfono no registra ubicación: para continuar aquí, registre su salida en el otro dispositivo y vuelva a marcar su entrada.';
 
 const appNativaVista = new Map();   // usuarioId -> ms del último lote recibido de la app Android (sirve para saber si puede recibir alertas)
-const appNativaActiva = (usuarioId, ventanaMs = 120_000) => Date.now() - (appNativaVista.get(usuarioId) || 0) < ventanaMs;
+// La app Android envía una vez por minuto: se la considera activa si envió en los últimos 3 minutos
+const appNativaActiva = (usuarioId, ventanaMs = 180_000) => Date.now() - (appNativaVista.get(usuarioId) || 0) < ventanaMs;
 
 // Emitir solo a administradores/supervisores conectados
 const emitStaff = (event, payload) => io.to('staff').emit(event, payload);
@@ -1669,17 +1676,20 @@ async function registrarFraude({ usuarioId, tipoEvento, foto, similitud, notas, 
 // Para qué se puede pedir una verificación facial (cada tipo genera su propio ticket de un solo uso)
 const TIPOS_VERIFICACION = ['entrada', 'salida', 'almuerzo_inicio', 'almuerzo_fin'];
 
-// Intentos fallidos de la prueba de vida (retos aleatorios): el celular avisa desde el 2.º seguido. Se guarda la foto del
-// intento para que un administrador pueda ver, por ejemplo, un video o una foto frente a la cámara.
+// Intentos fallidos de la prueba de vida (retos aleatorios): el celular avisa de cada uno (las apps anteriores, desde
+// el 2.º seguido). Se guarda la foto del intento, para ver por ejemplo un video frente a la cámara, y el diagnóstico,
+// para saber qué lo rechazó. Se ignora un aviso repetido y se limita la cantidad para no llenar la auditoría.
 const lastLivenessFail = new Map(); // usuarioId -> instante del último aviso
+const livenessLimiter = createLimiter({ max: 40, windowMs: 10 * 60 * 1000 });
 app.post('/api/biometric/liveness-fail', requireAuth(ROLES_WORKER), async (req, res) => {
   try {
-    const { foto, motivo, intentos } = req.body || {};
+    const { foto, motivo, intentos, diagnostico } = req.body || {};
     if (!validPhoto(foto)) return res.status(400).json({ error: 'Solicitud inválida' });
     const userId = req.user.id;
     const previo = lastLivenessFail.get(userId) || 0;
-    if (Date.now() - previo < 15_000) return res.json({ exito: true, omitido: true }); // no se llena la auditoría
+    if (Date.now() - previo < 2_000 || livenessLimiter.blockedFor(`vida:${userId}`)) return res.json({ exito: true, omitido: true });
     lastLivenessFail.set(userId, Date.now());
+    livenessLimiter.fail(`vida:${userId}`);
     const m = typeof motivo === 'string' ? motivo.replace(/[^a-z_]/gi, '').slice(0, 30) : 'desconocido';
     const n = Number.isInteger(intentos) && intentos > 0 && intentos < 100 ? intentos : 0;
     await registrarFraude({
@@ -1687,7 +1697,7 @@ app.post('/api/biometric/liveness-fail', requireAuth(ROLES_WORKER), async (req, 
       tipoEvento: 'FALLA_PRUEBA_VIDA',
       foto,
       similitud: 0,
-      notas: `Prueba de vida fallida (${m}); intentos fallidos seguidos: ${n}`,
+      notas: notaFalloVida(m, n, diagnostico),
     });
     res.json({ exito: true });
   } catch (err) {
@@ -1976,6 +1986,7 @@ app.post('/api/attendance/check-in', requireAuth(ROLES_WORKER), async (req, res)
     const registro = sinFotos(registroResultado.recordset[0]);
     console.log(`🔔 [CHECK_IN] Usuario ${usuarioId} registró ENTRADA (similitud ${bio.sim}%).`);
     emitStaff('attendance_event', { tipo: 'CHECK_IN', usuarioId, asistencia: registro, geocerca: geo, fecha: new Date().toISOString() });
+    autorizaciones.anularPendientes(usuarioId, 'entrada');
 
     res.json({ exito: true, asistencia: registro, geocerca: geo });
   } catch (err) {
@@ -2050,6 +2061,8 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
     const registroCompletado = sinFotos(resActualizacion.recordset[0]);
     console.log(`🔔 [CHECK_OUT] Usuario ${usuarioId} registró SALIDA.`);
     emitStaff('attendance_event', { tipo: 'CHECK_OUT', usuarioId, asistencia: registroCompletado, fecha: new Date().toISOString() });
+    autorizaciones.anularPendientes(usuarioId, 'salida');
+    recordatorios.darPorAtendidos(usuarioId);
 
     res.json({ exito: true, mensaje: 'Salida registrada y rastreo GPS desactivado', asistencia: registroCompletado });
   } catch (err) {
@@ -2101,6 +2114,8 @@ app.post('/api/attendance/lunch/start', requireAuth(ROLES_WORKER), async (req, r
         VALUES (@a, @u, @sim, @foto, @lat, @lng)`);
     console.log(`🍽️ [ALMUERZO] Usuario ${usuarioId} inició su almuerzo (turno ${turno.id}).`);
     emitStaff('almuerzo_event', { tipo: 'INICIO', usuarioId, asistenciaId: turno.id, fecha: new Date().toISOString() });
+    autorizaciones.anularPendientes(usuarioId, 'almuerzo_inicio');
+    recordatorios.darPorAtendidos(usuarioId);
     res.json({ exito: true, almuerzo: { id: r.recordset[0].id, permitidoMinutos: config.almuerzoMinutos } });
   } catch (err) {
     if (esTurnoDuplicado(err)) return res.status(400).json({ error: 'Ya está en su almuerzo', codigo: 'YA_EN_ALMUERZO' });
@@ -2149,6 +2164,8 @@ app.post('/api/attendance/lunch/end', requireAuth(ROLES_WORKER), async (req, res
     const minutos = Math.round(segundos / 60);
     console.log(`🍽️ [ALMUERZO] Usuario ${usuarioId} terminó su almuerzo (${minutos} min).`);
     emitStaff('almuerzo_event', { tipo: 'FIN', usuarioId, asistenciaId: turno.id, segundos, fecha: new Date().toISOString() });
+    autorizaciones.anularPendientes(usuarioId, 'almuerzo_fin');
+    recordatorios.darPorAtendidos(usuarioId);
     res.json({ exito: true, almuerzo: { segundos, minutos, permitidoMinutos: config.almuerzoMinutos, excedido: segundos > config.almuerzoMinutos * 60 } });
   } catch (err) {
     fail(res, err);
@@ -2703,6 +2720,47 @@ app.get('/api/attendance/fraud-logs', requireAuth(ROLES_STAFF), async (req, res)
   }
 });
 
+// Las mismas alertas agrupadas por trabajador, día y tipo, para que el panel no muestre una fila por intento
+app.get('/api/attendance/fraud-groups', requireAuth(ROLES_STAFF), async (req, res) => {
+  try {
+    const p = await getPool();
+    const result = await p.request().query(`
+      SELECT TOP 3000
+        f.id, f.usuario_id, u.nombre as nombre_usuario, u.codigo_empleado, u.cargo,
+        f.fecha_intento, f.tipo_evento, CASE WHEN f.foto_intento_url IS NULL THEN 0 ELSE 1 END AS tiene_foto_intento,
+        f.similitud_obtenida, f.latitud, f.longitud, f.notas
+      FROM AuditoriaFraudeFacial f
+      JOIN Usuarios u ON f.usuario_id = u.id
+      ORDER BY f.fecha_intento DESC, f.id DESC;
+    `);
+    res.json(agruparAlertas(result.recordset, config.zonaHoraria));
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ----------------- AUTORIZACIÓN DE LA OFICINA -----------------
+const autorizaciones = registrarAutorizaciones(app, {
+  sql, getPool, requireAuth, ROLES_ADMIN, ROLES_WORKER, config, fail, emitStaff,
+  TIPOS_VERIFICACION, parseDescriptor, euclideanDistance, similarityFromDistance, faceFailLimiter, registrarFraude,
+  validPhoto: (s) => validPhoto(s),
+  validCoords: (lat, lng) => validCoords(lat, lng),
+  isNum: (v) => isNum(v),
+  optNum: (v) => optNum(v),
+  idParam: (v) => idParam(v),
+  enviarFoto: (res, foto) => enviarFoto(res, foto),
+  detectarEstacionTrabajo, turnoActivoDe, dispositivoDe, esOtroDispositivo, MSG_OTRO_DISPOSITIVO,
+  esDuplicado: (err) => esTurnoDuplicado(err),
+  almuerzoHabilitado: () => almuerzoTabla,
+  dispositivoHabilitado: () => dispositivoColumna,
+  limpiarCaches: (usuarioId) => {
+    lastPings.delete(usuarioId);
+    gpsImprecisos.delete(usuarioId);
+    turnoCache.delete(usuarioId);
+    recordatorios.darPorAtendidos(usuarioId);
+  },
+});
+
 // ----------------- NOTIFICACIONES PUSH / ALERTAS -----------------
 
 const MENSAJE_ALERTA_DEFECTO = 'Se encuentra fuera de su zona de trabajo. Regrese a su estación asignada.';
@@ -2788,6 +2846,63 @@ app.post('/api/push/unsubscribe', requireAuth(ROLES_WORKER), async (req, res) =>
   }
 });
 
+// Entrega una alerta ya registrada en AlertasEnviadas: notificación push a sus navegadores y aviso dentro de la app
+// abierta. La app Android la recibe además en la respuesta de su siguiente envío de ubicación.
+async function entregarAlerta(p, { alertaId, usuarioId, mensaje, titulo, tag, ttl }) {
+  const subs = pushConfigurado
+    ? (await p.request().input('u', sql.Int, usuarioId)
+        .query('SELECT id, endpoint, p256dh, auth FROM SuscripcionesPush WHERE usuario_id = @u')).recordset
+    : [];
+
+  const payload = JSON.stringify({ title: titulo, body: mensaje, tag, alertaId, url: `/?alerta=${alertaId}` });
+
+  // urgency "high" + TTL: el sistema del celular la entrega aunque esté en reposo
+  const resultados = await Promise.allSettled(
+    subs.map((s) =>
+      webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload, {
+        TTL: ttl,
+        urgency: 'high',
+        timeout: 8000,
+      })
+    )
+  );
+
+  let exitosos = 0;
+  const caducadas = [];
+  resultados.forEach((r, i) => {
+    if (r.status === 'fulfilled') {
+      exitosos += 1;
+    } else if (r.reason?.statusCode === 404 || r.reason?.statusCode === 410) {
+      caducadas.push(subs[i].id); // el celular ya no está suscrito (desinstaló la app o revocó el permiso)
+    } else {
+      console.warn(`Alerta ${alertaId}: fallo al enviar a un dispositivo (${r.reason?.statusCode || r.reason?.message})`);
+    }
+  });
+
+  for (const id of caducadas) {
+    await p.request().input('id', sql.Int, id).query('DELETE FROM SuscripcionesPush WHERE id = @id');
+  }
+  await p.request().input('id', sql.Int, alertaId).input('d', sql.Int, subs.length).input('e', sql.Int, exitosos)
+    .query('UPDATE AlertasEnviadas SET dispositivos = @d, exitosos = @e WHERE id = @id');
+
+  // Si el trabajador tiene la app abierta, además se le avisa al instante dentro de la app
+  io.to(`user:${usuarioId}`).emit('alerta', { id: alertaId, mensaje, fecha: new Date().toISOString() });
+  const enApp = (await io.in(`user:${usuarioId}`).fetchSockets()).length > 0;
+
+  return { dispositivos: subs.length, exitosos, caducados: caducadas.length, enApp };
+}
+
+// ----------------- RECORDATORIOS DE MARCACIÓN -----------------
+const recordatorios = registrarRecordatorios(app, {
+  sql, getPool, requireAuth, ROLES_ADMIN, ROLES_STAFF, config, fail,
+  alertasListas: () => pushTablasListas,
+  almuerzoHabilitado: () => almuerzoTabla,
+  autorizacionesHabilitadas: () => autorizaciones.estaHabilitado(),
+  vigenciaAutorizacionMin: VIGENCIA_MIN,
+  entregar: (p, aviso) =>
+    entregarAlerta(p, { ...aviso, titulo: `Recordatorio de ${config.marcaNombre}`, tag: 'smi-recordatorio', ttl: 900 }),
+});
+
 // Un administrador/supervisor envía una alerta a un trabajador
 app.post('/api/push/send', requireAuth(ROLES_STAFF), async (req, res) => {
   try {
@@ -2815,57 +2930,17 @@ app.post('/api/push/send', requireAuth(ROLES_STAFF), async (req, res) => {
       .query('INSERT INTO AlertasEnviadas (usuario_id, enviado_por, mensaje) OUTPUT INSERTED.id VALUES (@u, @por, @m)');
     const alertaId = reg.recordset[0].id;
 
-    const subs = (await p.request().input('u', sql.Int, usuarioId)
-      .query('SELECT id, endpoint, p256dh, auth FROM SuscripcionesPush WHERE usuario_id = @u')).recordset;
-
-    const payload = JSON.stringify({
-      title: `Alerta de ${config.marcaNombre}`,
-      body: mensaje,
-      tag: 'smi-alerta',
-      alertaId,
-      url: `/?alerta=${alertaId}`,
+    const { dispositivos, exitosos, caducados, enApp } = await entregarAlerta(p, {
+      alertaId, usuarioId, mensaje, titulo: `Alerta de ${config.marcaNombre}`, tag: 'smi-alerta', ttl: 3600,
     });
 
-    // urgency "high" + TTL de 1 hora: el sistema del celular la entrega aunque esté en reposo
-    const resultados = await Promise.allSettled(
-      subs.map((s) =>
-        webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload, {
-          TTL: 3600,
-          urgency: 'high',
-          timeout: 8000,
-        })
-      )
-    );
-
-    let exitosos = 0;
-    const caducadas = [];
-    resultados.forEach((r, i) => {
-      if (r.status === 'fulfilled') {
-        exitosos += 1;
-      } else if (r.reason?.statusCode === 404 || r.reason?.statusCode === 410) {
-        caducadas.push(subs[i].id); // el celular ya no está suscrito (desinstaló la app o revocó el permiso)
-      } else {
-        console.warn(`Alerta ${alertaId}: fallo al enviar a un dispositivo (${r.reason?.statusCode || r.reason?.message})`);
-      }
-    });
-
-    for (const id of caducadas) {
-      await p.request().input('id', sql.Int, id).query('DELETE FROM SuscripcionesPush WHERE id = @id');
-    }
-    await p.request().input('id', sql.Int, alertaId).input('d', sql.Int, subs.length).input('e', sql.Int, exitosos)
-      .query('UPDATE AlertasEnviadas SET dispositivos = @d, exitosos = @e WHERE id = @id');
-
-    // Si el trabajador tiene la app abierta, además se le avisa al instante dentro de la app
-    io.to(`user:${usuarioId}`).emit('alerta', { id: alertaId, mensaje, fecha: new Date().toISOString() });
-    const enApp = (await io.in(`user:${usuarioId}`).fetchSockets()).length > 0;
-
-    console.log(`🔔 [ALERTA ${alertaId}] ${req.user.id} -> usuario ${usuarioId}: ${exitosos}/${subs.length} dispositivos, app abierta: ${enApp}, app Android: ${appNativaActiva(usuarioId)}`);
+    console.log(`🔔 [ALERTA ${alertaId}] ${req.user.id} -> usuario ${usuarioId}: ${exitosos}/${dispositivos} dispositivos, app abierta: ${enApp}, app Android: ${appNativaActiva(usuarioId)}`);
     res.json({
       alertaId,
       trabajador: u.recordset[0].nombre,
-      dispositivos: subs.length,
+      dispositivos,
       entregadosAlServicioPush: exitosos,
-      caducados: caducadas.length,
+      caducados,
       appAbierta: enApp,
       appNativa: appNativaActiva(usuarioId),
     });
@@ -2882,8 +2957,9 @@ app.post('/api/push/alertas/:id/leida', requireAuth(ROLES_WORKER), async (req, r
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Solicitud inválida' });
     const p = await getPool();
     const r = await p.request().input('id', sql.Int, id).input('u', sql.Int, req.user.id)
-      .query('UPDATE AlertasEnviadas SET leida_en = GETDATE() WHERE id = @id AND usuario_id = @u AND leida_en IS NULL');
-    if (r.rowsAffected[0]) {
+      .query('UPDATE AlertasEnviadas SET leida_en = GETDATE() OUTPUT INSERTED.enviado_por WHERE id = @id AND usuario_id = @u AND leida_en IS NULL');
+    // Los recordatorios automáticos (enviado_por = el propio trabajador) no se anuncian en el panel
+    if (r.recordset.length && r.recordset[0].enviado_por !== req.user.id) {
       emitStaff('alerta_leida', { alertaId: id, usuarioId: req.user.id, fecha: new Date().toISOString() });
     }
     res.json({ exito: true });
@@ -3121,4 +3197,6 @@ server.listen(config.port, '0.0.0.0', () => {
   checkPrivacidadTabla();
   checkDniColumna();
   checkProyectos();
+  autorizaciones.comprobarTabla();
+  recordatorios.comprobarTabla();
 });
