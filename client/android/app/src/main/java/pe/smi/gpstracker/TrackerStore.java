@@ -97,6 +97,7 @@ final class TrackerStore extends SQLiteOpenHelper {
                 .putBoolean("tokenInvalido", false)
                 .remove("ultimoError")
                 .remove("gpsApagadoDesde")
+                .remove("permisoQuitadoDesde")
                 .apply();
     }
 
@@ -188,8 +189,19 @@ final class TrackerStore extends SQLiteOpenHelper {
     synchronized void vaciarCola() {
         getWritableDatabase().delete("puntos", null, null);
         getWritableDatabase().delete("eventos", null, null);
-        prefs.edit().remove("gpsApagadoDesde").apply();
+        prefs.edit().remove("gpsApagadoDesde").remove("permisoQuitadoDesde").apply();
     }
+
+    // ---------------- Permiso "todo el tiempo" quitado durante el turno ----------------
+
+    /** Momento (ms) en que se detectó que faltaba el permiso; 0 = está completo. */
+    long getPermisoQuitadoDesde() { return prefs.getLong("permisoQuitadoDesde", 0L); }
+    void setPermisoQuitadoDesde(long t) {
+        if (t <= 0) prefs.edit().remove("permisoQuitadoDesde").apply();
+        else prefs.edit().putLong("permisoQuitadoDesde", t).apply();
+    }
+    long getUltimoAvisoPermiso() { return prefs.getLong("ultimoAvisoPermiso", 0L); }
+    void setUltimoAvisoPermiso(long t) { prefs.edit().putLong("ultimoAvisoPermiso", t).apply(); }
 
     // ---------------- Ubicación apagada / encendida ----------------
 

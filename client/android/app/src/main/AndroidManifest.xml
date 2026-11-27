@@ -41,6 +41,9 @@
             android:exported="false"
             android:foregroundServiceType="location" />
 
+        <!-- Alarma que revisa el permiso de ubicación durante el turno, aunque Android haya cerrado la app -->
+        <receiver android:name=".PermisoReceiver" android:exported="false" />
+
         <!-- Retoma el rastreo si el celular se reinicia en medio de un turno -->
         <receiver
             android:name=".BootReceiver"

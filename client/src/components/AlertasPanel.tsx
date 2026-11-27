@@ -14,6 +14,8 @@ const etiquetaEvento = (tipo: string) =>
     GPS_APAGADO: 'Apagó la ubicación (GPS)',
     GPS_REACTIVADO: 'Reactivó la ubicación (GPS)',
     SIN_SENAL_GPS: 'Sin señal GPS en turno',
+    PERMISO_UBICACION: 'Quitó el permiso de ubicación',
+    PERMISO_RESTABLECIDO: 'Restableció el permiso de ubicación',
   } as Record<string, string>)[tipo] || tipo.charAt(0) + tipo.slice(1).toLowerCase().replace(/_/g, ' ');
 
 // Solo estos eventos comparan rostros: en los demás no hay "similitud" que mostrar

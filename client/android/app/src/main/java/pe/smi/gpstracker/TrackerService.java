@@ -113,6 +113,7 @@ public class TrackerService extends Service {
         corriendo = true;
         pedirUbicaciones(store.getIntervalMs());
         vigilarUbicacion();
+        PermisoReceiver.programar(this); // revisa el permiso aunque Android cierre la aplicación
         subir(); // vacía lo que haya quedado pendiente de antes
         return START_STICKY;
     }
@@ -128,6 +129,7 @@ public class TrackerService extends Service {
         @Override
         public void run() {
             revisarUbicacion();
+            if (corriendo && VigiaPermiso.revisar(TrackerService.this)) subir(); // el aviso a la oficina sale enseguida
             // Si dejaron de llegar lecturas (p. ej. bajo techo), lo pendiente se envía igual
             if (corriendo && TrackerStore.get(TrackerService.this).pendientes() > 0) subirSiToca();
             if (vigia != null && corriendo) vigia.postDelayed(this, REVISION_MS);
@@ -325,7 +327,9 @@ public class TrackerService extends Service {
     private void apagar() {
         corriendo = false;
         dejarDeVigilarUbicacion();
+        PermisoReceiver.cancelar(this);
         AlertNotifier.ubicacionReactivada(this);
+        AlertNotifier.permisoRestablecido(this);
         try {
             if (fused != null && callback != null) fused.removeLocationUpdates(callback);
         } catch (Exception ignore) {}

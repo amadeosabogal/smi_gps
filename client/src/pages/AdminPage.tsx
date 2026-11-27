@@ -517,6 +517,8 @@ export const AdminPage: React.FC = () => {
         GPS_APAGADO: `ALERTA: ${nombre} apagó la ubicación de su celular durante el turno (${ahora})`,
         SIN_SENAL_GPS: `ALERTA: ${nombre} lleva varios minutos sin enviar ubicación (${ahora})`,
         GPS_REACTIVADO: `${nombre} volvió a activar la ubicación de su celular (${ahora})`,
+        PERMISO_UBICACION: `ALERTA: ${nombre} ya no permite la ubicación "todo el tiempo" en su celular (${ahora})`,
+        PERMISO_RESTABLECIDO: `${nombre} restableció el permiso de ubicación (${ahora})`,
         INTENTO_DIA_NO_LABORABLE: `ALERTA: ${nombre} intentó usar la app en un día no laborable (${ahora})`,
       };
       setRecentNotification({
@@ -1482,8 +1484,10 @@ export const AdminPage: React.FC = () => {
                                     </span>
                                   </div>
                                   <div className="mt-1 flex items-center justify-between text-xs">
-                                    <span className={sinSenal ? 'font-semibold text-red-700' : 'text-slate-500'}>
-                                      {sinSenal
+                                    <span className={sinSenal || worker.permiso_quitado ? 'font-semibold text-red-700' : 'text-slate-500'}>
+                                      {worker.permiso_quitado
+                                        ? `Sin permiso "todo el tiempo" · última señal hace ${formatoHace(seg)}`
+                                        : sinSenal
                                         ? `Sin señal GPS desde hace ${formatoHace(seg)}`
                                         : `Última señal hace ${formatoHace(seg)}`}
                                     </span>

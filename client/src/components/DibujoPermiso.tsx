@@ -2,7 +2,7 @@ import React from 'react';
 import { MapPin } from 'lucide-react';
 import type { IdPaso } from '../services/pasosPermisos';
 
-// Dibujos de las ventanas de Android que muestran dónde tocar. Son una guía: cada teléfono las pinta algo distinto.
+// Dibujos de las ventanas de Android y de iPhone que muestran dónde tocar. Son una guía: cada teléfono las pinta algo distinto.
 // La opción resaltada late (animación "toque-objetivo" en index.css).
 
 const Objetivo: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => (
@@ -40,7 +40,38 @@ const Interruptor: React.FC<{ texto: string }> = ({ texto }) => (
   </Objetivo>
 );
 
-export const DibujoPermiso: React.FC<{ paso: IdPaso; samsung?: boolean }> = ({ paso, samsung }) => (
+const DibujoIPhone: React.FC<{ paso: IdPaso }> = ({ paso }) => (
+  <>
+    {paso === 'ubicacion' && <Interruptor texto="Localización" />}
+    {paso === 'precisa' && (
+      <Ventana titulo="¿Permitir que la app use su ubicación?">
+        <p className="text-brand-700">Ubicación precisa: Sí</p>
+        <p>Permitir una vez</p>
+        <Objetivo className="rounded-lg py-2">Permitir al usar la app</Objetivo>
+        <p>No permitir</p>
+      </Ventana>
+    )}
+    {paso === 'todo' && (
+      <Ventana titulo="¿Permitir que la app use su ubicación también en segundo plano?">
+        <p>Mantener “Solo al usar la app”</p>
+        <Objetivo className="rounded-lg py-2">Cambiar a “Permitir siempre”</Objetivo>
+      </Ventana>
+    )}
+    {paso === 'notificaciones' && (
+      <Ventana titulo="La app quiere enviarle notificaciones">
+        <p>No permitir</p>
+        <Objetivo className="rounded-lg py-2">Permitir</Objetivo>
+      </Ventana>
+    )}
+  </>
+);
+
+export const DibujoPermiso: React.FC<{ paso: IdPaso; samsung?: boolean; ios?: boolean }> = ({ paso, samsung, ios }) =>
+  ios ? (
+    <div className="mx-auto w-full max-w-xs bg-slate-100 p-3" aria-hidden="true">
+      <DibujoIPhone paso={paso} />
+    </div>
+  ) : (
   <div className="mx-auto w-full max-w-xs bg-slate-100 p-3" aria-hidden="true">
     {paso === 'ubicacion' && <Interruptor texto="Ubicación" />}
     {paso === 'precisa' && (
@@ -89,4 +120,4 @@ export const DibujoPermiso: React.FC<{ paso: IdPaso; samsung?: boolean }> = ({ p
         <Interruptor texto="Inicio automático" />
       ))}
   </div>
-);
+  );

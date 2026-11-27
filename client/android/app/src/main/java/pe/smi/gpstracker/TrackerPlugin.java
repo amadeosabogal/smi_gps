@@ -81,6 +81,14 @@ public class TrackerPlugin extends Plugin {
         return o;
     }
 
+    /** La app ve que falta el permiso (o que volvió): se anota y se informa al servidor sin esperar. */
+    @PluginMethod
+    public void revisarPermisos(PluginCall call) {
+        Context ctx = getContext().getApplicationContext();
+        if (VigiaPermiso.revisar(ctx)) new Thread(() -> TrackerUploader.vaciar(ctx)).start();
+        call.resolve(permisos());
+    }
+
     @PluginMethod
     public void permisosEstado(PluginCall call) {
         call.resolve(permisos());

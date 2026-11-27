@@ -14,7 +14,10 @@ public class BootReceiver extends BroadcastReceiver {
         String accion = intent == null ? null : intent.getAction();
         if (!Intent.ACTION_BOOT_COMPLETED.equals(accion) && !Intent.ACTION_MY_PACKAGE_REPLACED.equals(accion)) return;
         try {
-            if (TrackerStore.get(context).isActive()) TrackerService.iniciar(context);
+            if (TrackerStore.get(context).isActive()) {
+                PermisoReceiver.programar(context); // el reinicio borra las alarmas
+                TrackerService.iniciar(context);
+            }
         } catch (Exception e) {
             // Android puede negar iniciar un servicio en primer plano desde segundo plano; se reintenta al abrir la app
             TrackerStore.get(context).setLastError("No se pudo retomar el rastreo tras el reinicio");

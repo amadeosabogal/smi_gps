@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Circle } from 'lucide-react';
-import { bateriaObligatoria, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
+import { bateriaObligatoria, esAppIOS, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
 import { esSamsung, pasoActual, pasosDePermisos, type IdPaso } from '../services/pasosPermisos';
 import { DibujoPermiso } from './DibujoPermiso';
 
@@ -9,9 +9,9 @@ interface Props {
   onCancelar: () => void;
 }
 
-// Asistente de permisos de la app Android: un botón para empezar y luego un paso a la vez, con un dibujo de dónde
+// Asistente de permisos de la app instalada: un botón para empezar y luego un paso a la vez, con un dibujo de dónde
 // tocar. Los ya concedidos se saltan solos. El rastreo con la pantalla apagada solo funciona si el trabajador concede
-// la ubicación "todo el tiempo" y la app no queda restringida por el ahorro de batería.
+// la ubicación "todo el tiempo" (iPhone: "Siempre") y, en Android, la app no queda restringida por la batería.
 
 const ESPERA_VENTANA_MS = 1500; // tiempo para leer la instrucción antes de que la app abra la ventana de Android
 const ESPERA_FINAL_MS = 1800; // cuánto se ve "Listo" antes de continuar con la marcación
@@ -38,7 +38,37 @@ const NOMBRE: Record<IdPaso, string> = {
   fabricante: 'Ajuste del fabricante',
 };
 
+function textosIPhone(id: IdPaso): { titulo: string; instruccion: string; ayuda: string } {
+  switch (id) {
+    case 'ubicacion':
+      return {
+        titulo: 'Active la localización',
+        instruccion: 'En Ajustes, entre a Privacidad y seguridad → Localización y actívela. Luego vuelva aquí.',
+        ayuda: 'Si se abrieron los ajustes de la aplicación, toque atrás hasta llegar a Privacidad y seguridad.',
+      };
+    case 'precisa':
+      return {
+        titulo: 'Permita su ubicación',
+        instruccion: 'En la ventana toque "Permitir al usar la app" y deje activada la ubicación precisa.',
+        ayuda: 'Si la ventana no aparece, en los ajustes de la aplicación entre a Ubicación y active "Ubicación precisa".',
+      };
+    case 'todo':
+      return {
+        titulo: 'Permitir siempre',
+        instruccion: 'En la ventana toque "Cambiar a Permitir siempre". Así se registra con la pantalla apagada.',
+        ayuda: 'Si la ventana no aparece, en los ajustes de la aplicación entre a Ubicación y marque "Siempre".',
+      };
+    default:
+      return {
+        titulo: 'Permita las notificaciones',
+        instruccion: 'En la ventana toque "Permitir". Así le llegan los recordatorios y las alertas de la oficina.',
+        ayuda: 'Si la ventana no aparece, active las notificaciones en los ajustes de la aplicación.',
+      };
+  }
+}
+
 function textos(id: IdPaso, est: EstadoRastreo): { titulo: string; instruccion: string; ayuda: string } {
+  if (esAppIOS) return textosIPhone(id);
   const samsung = esSamsung(est.fabricante);
   switch (id) {
     case 'ubicacion':
@@ -97,7 +127,9 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
 
   const refrescar = useCallback(async () => {
     try {
-      setEst(await nativeTracker.estado());
+      const nuevo = await nativeTracker.estado();
+      // Si nada cambió no se vuelve a dibujar (evita perder un toque en pleno redibujado)
+      setEst((antes) => (JSON.stringify(antes) === JSON.stringify(nuevo) ? antes : nuevo));
     } catch {
       /* se reintenta en la siguiente revisión */
     }
@@ -133,7 +165,7 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
     [refrescar]
   );
 
-  const pasos = est ? pasosDePermisos(est, bateriaObligatoria(est.fabricante)) : [];
+  const pasos = est ? pasosDePermisos(est, bateriaObligatoria(est.fabricante), esAppIOS) : [];
   const actual = empezado ? pasoActual(pasos, omitidos, elegido) : null;
   const terminado = Boolean(est && empezado && !actual && permisosCompletos(est));
 
@@ -203,7 +235,7 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
         <p className="mt-1 text-base leading-snug text-slate-700">{t.instruccion}</p>
 
         <div className="mt-3">
-          <DibujoPermiso paso={actual.id} samsung={esSamsung(est.fabricante)} />
+          <DibujoPermiso paso={actual.id} samsung={esSamsung(est.fabricante)} ios={esAppIOS} />
         </div>
 
         {intentado && !ocupado && <p className="mt-3 text-sm text-slate-600">{t.ayuda}</p>}
@@ -241,8 +273,8 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
     <>
       <h2 className="text-base font-semibold text-slate-900">Configurar el rastreo del turno</h2>
       <p className="mt-1 text-sm text-slate-600">
-        Son permisos de Android que se dan <strong>una sola vez</strong>. La aplicación se los pide uno por uno y le muestra dónde
-        tocar.
+        Son permisos del teléfono que se dan <strong>una sola vez</strong>. La aplicación se los pide uno por uno y le muestra dónde
+        tocar.{esAppIOS && ' Durante el turno no cierre la aplicación deslizándola hacia arriba.'}
       </p>
 
       <ul className="mt-3">
@@ -256,7 +288,7 @@ export const NativePermissionsModal: React.FC<Props> = ({ onListo, onCancelar })
                 ) : (
                   <Circle className="h-6 w-6 flex-shrink-0 text-brand-600" aria-label="Pendiente" />
                 )}
-                <span className="text-sm font-medium text-slate-900">{NOMBRE[p.id]}</span>
+                <span className="text-sm font-medium text-slate-900">{esAppIOS && p.id === 'todo' ? 'Ubicación "Siempre"' : NOMBRE[p.id]}</span>
                 {!p.obligatorio && !p.ok && <span className="tag ml-auto">Recomendado</span>}
               </button>
             </li>

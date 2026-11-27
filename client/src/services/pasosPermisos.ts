@@ -1,4 +1,4 @@
-// Pasos del asistente de permisos de la app Android. Lógica pura (se prueba sin teléfono).
+// Pasos del asistente de permisos de la app instalada (Android e iPhone). Lógica pura (se prueba sin teléfono).
 import type { EstadoRastreo } from './nativeTracker';
 
 export type IdPaso = 'ubicacion' | 'precisa' | 'todo' | 'notificaciones' | 'bateria' | 'fabricante';
@@ -8,16 +8,25 @@ export interface PasoPermiso {
   /** Lo confirma el teléfono; el ajuste del fabricante no se puede comprobar */
   ok: boolean;
   obligatorio: boolean;
-  /** 'ventana': Android muestra una ventana y la app la abre sola · 'ajustes': hay que ir a una pantalla de ajustes */
+  /** 'ventana': el sistema muestra una ventana y la app la abre sola · 'ajustes': hay que ir a una pantalla de ajustes */
   modo: 'ventana' | 'ajustes';
 }
 
 export const esXiaomi = (fabricante: string) => /xiaomi|redmi|poco/i.test(fabricante || '');
 export const esSamsung = (fabricante: string) => /samsung/i.test(fabricante || '');
 
-/** Todos los pasos que aplican a este teléfono, en el orden en que Android permite concederlos. */
-export function pasosDePermisos(est: EstadoRastreo, bateriaEsObligatoria: boolean): PasoPermiso[] {
+/** Todos los pasos que aplican a este teléfono, en el orden en que el sistema permite concederlos. */
+export function pasosDePermisos(est: EstadoRastreo, bateriaEsObligatoria: boolean, ios = false): PasoPermiso[] {
   const p = est.permisos;
+  if (ios) {
+    // iPhone pregunta "Siempre" con una ventana (una sola vez) y no permite exigir las notificaciones
+    return [
+      { id: 'ubicacion', ok: p.ubicacionActivada, obligatorio: true, modo: 'ajustes' },
+      { id: 'precisa', ok: p.ubicacionPrecisa, obligatorio: true, modo: 'ventana' },
+      { id: 'todo', ok: p.segundoPlano, obligatorio: true, modo: 'ventana' },
+      { id: 'notificaciones', ok: p.notificaciones, obligatorio: false, modo: 'ventana' },
+    ];
+  }
   const pasos: PasoPermiso[] = [
     { id: 'ubicacion', ok: p.ubicacionActivada, obligatorio: true, modo: 'ajustes' },
     { id: 'precisa', ok: p.ubicacionPrecisa, obligatorio: true, modo: 'ventana' },

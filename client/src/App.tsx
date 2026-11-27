@@ -10,9 +10,9 @@ import { AppUpdateNotice } from './components/AppUpdateNotice';
 export function App() {
   return (
     <BrowserRouter>
-      {/* La app Android lleva su propia versión empaquetada: el aviso de actualización web no aplica */}
+      {/* La app instalada lleva su propia versión empaquetada: el aviso de actualización web no aplica */}
       {!esAppNativa && <UpdatePrompt />}
-      {/* En la app Android el aviso equivalente consulta la última versión del APK publicada */}
+      {/* En la app instalada el aviso equivalente consulta la última versión publicada (APK o tienda de Apple) */}
       {esAppNativa && <AppUpdateNotice />}
       <Routes>
         {/* Ruta principal: Aplicación Móvil del Trabajador (PWA / Reloj Marcador) */}

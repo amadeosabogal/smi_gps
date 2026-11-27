@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Download } from 'lucide-react';
 import { api } from '../services/api';
-import { nativeTracker } from '../services/nativeTracker';
+import { esAppIOS, nativeTracker } from '../services/nativeTracker';
 
 interface Disponible {
   versionName: string;
@@ -13,7 +13,8 @@ interface Disponible {
 
 const CLAVE_DESCARTADA = 'smi_update_descartada';
 
-// Aviso dentro de la app Android cuando hay un APK más nuevo publicado en el servidor.
+// Aviso dentro de la app instalada cuando el servidor publica una versión más nueva: un APK en Android; en iPhone,
+// el enlace de la App Store o de TestFlight. Se compara el versionCode (en iPhone, el número de "Build" de Xcode).
 // Si la versión instalada es menor que la mínima exigida ("urgente"), el aviso no se puede cerrar.
 export const AppUpdateNotice: React.FC = () => {
   const [nueva, setNueva] = useState<Disponible | null>(null);
@@ -21,23 +22,25 @@ export const AppUpdateNotice: React.FC = () => {
 
   const revisar = useCallback(async () => {
     try {
-      const [{ android }, instalada] = await Promise.all([api.getAppVersion(), nativeTracker.versionInstalada()]);
-      if (!android || android.versionCode <= instalada.code) {
+      const [versiones, instalada] = await Promise.all([api.getAppVersion(), nativeTracker.versionInstalada()]);
+      const publicada = esAppIOS ? versiones.ios : versiones.android;
+      if (!publicada || publicada.versionCode <= instalada.code) {
         setNueva(null);
         return;
       }
-      const urgente = android.minVersionCode > instalada.code;
+      const urgente = publicada.minVersionCode > instalada.code;
       let descartada = 0;
       try {
         descartada = Number(localStorage.getItem(CLAVE_DESCARTADA) || 0);
       } catch {
         /* almacenamiento no disponible */
       }
-      if (!urgente && descartada >= android.versionCode) {
+      if (!urgente && descartada >= publicada.versionCode) {
         setNueva(null);
         return;
       }
-      setNueva({ versionName: android.versionName, versionCode: android.versionCode, url: android.url, notas: android.notas, urgente });
+      const { versionName, versionCode, url, notas } = publicada;
+      setNueva({ versionName, versionCode, url, notas, urgente });
     } catch {
       /* sin conexión: se vuelve a revisar al regresar a la app */
     }
@@ -59,7 +62,7 @@ export const AppUpdateNotice: React.FC = () => {
     try {
       await nativeTracker.abrirEnlace(nueva.url);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo abrir la descarga');
+      setError(e?.message || (esAppIOS ? 'No se pudo abrir la tienda' : 'No se pudo abrir la descarga'));
     }
   };
 
@@ -90,7 +93,7 @@ export const AppUpdateNotice: React.FC = () => {
           {error && <p className="text-xs font-semibold">{error}</p>}
         </div>
         <button type="button" onClick={descargar} className="flex-shrink-0 bg-white px-3 py-1.5 text-xs font-semibold text-slate-900">
-          Descargar
+          {esAppIOS ? 'Actualizar' : 'Descargar'}
         </button>
         {!nueva.urgente && (
           <button type="button" onClick={descartar} className="flex-shrink-0 px-2 py-1.5 text-xs font-semibold underline">

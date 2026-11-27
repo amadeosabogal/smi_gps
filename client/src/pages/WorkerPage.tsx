@@ -11,7 +11,7 @@ import { PushAlertCard } from '../components/PushAlertCard';
 import { AuthLayout } from '../components/AuthLayout';
 import { BrandLogo } from '../components/BrandLogo';
 import { syncPush, releasePush } from '../services/push';
-import { esAppNativa, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
+import { esAppIOS, esAppNativa, nativeTracker, permisosCompletos, type EstadoRastreo } from '../services/nativeTracker';
 import { NativePermissionsModal } from '../components/NativePermissionsModal';
 import { useAutorizacion, mensajeRespuesta, NOMBRE_MARCACION } from '../services/useAutorizacion';
 import { DiaNoLaborable } from '../components/DiaNoLaborable';
@@ -281,11 +281,29 @@ export const WorkerPage: React.FC = () => {
   // Si el trabajador apaga la ubicación del celular durante el turno, la pantalla se bloquea hasta que la reactive
   // (el servicio nativo ya dejó el aviso en el celular y se lo informa al supervisor).
   const ubicacionApagada = esAppNativa && isActiveShift && !!estadoNativo && !estadoNativo.permisos.ubicacionActivada;
+  // Igual si le quitan la ubicación "todo el tiempo" (p. ej. "solo mientras se usa la app") o la precisa
+  const permisoIncompleto =
+    esAppNativa &&
+    isActiveShift &&
+    !turnoEnOtroDispositivo &&
+    !!estadoNativo &&
+    estadoNativo.permisos.ubicacionActivada &&
+    (!estadoNativo.permisos.segundoPlano || !estadoNativo.permisos.ubicacionPrecisa);
   useEffect(() => {
-    if (!ubicacionApagada) return;
+    if (!ubicacionApagada && !permisoIncompleto) return;
     const id = setInterval(() => nativeTracker.estado().then(setEstadoNativo).catch(() => {}), 3_000);
     return () => clearInterval(id);
-  }, [ubicacionApagada]);
+  }, [ubicacionApagada, permisoIncompleto]);
+  // Cada cambio (se quitó o se restableció) se anota en el teléfono y se informa a la oficina
+  useEffect(() => {
+    if (esAppNativa && isActiveShift) nativeTracker.revisarPermisos().catch(() => {});
+  }, [permisoIncompleto, isActiveShift]);
+
+  const corregirPermiso = async () => {
+    const precisa = estadoNativo?.permisos.ubicacionPrecisa;
+    await (precisa ? nativeTracker.pedirSegundoPlano() : nativeTracker.pedirUbicacion()).catch(() => {});
+    nativeTracker.estado().then(setEstadoNativo).catch(() => {});
+  };
 
   // Reloj del almuerzo
   useEffect(() => {
@@ -467,7 +485,7 @@ export const WorkerPage: React.FC = () => {
   // Durante el turno: mantener la pantalla encendida (el navegador deja de entregar el GPS con la pantalla
   // apagada o la app en segundo plano) y reportar la posición al instante cuando se vuelve a la app.
   useEffect(() => {
-    if (esAppNativa || !isActiveShift || !selectedUser || turnoEnOtroDispositivo) return; // en la app Android no hace falta mantener la pantalla encendida
+    if (esAppNativa || !isActiveShift || !selectedUser || turnoEnOtroDispositivo) return; // en la app instalada no hace falta mantener la pantalla encendida
     const usuarioId = selectedUser.id;
     let lock: WakeLockSentinel | null = null;
 
@@ -565,9 +583,10 @@ export const WorkerPage: React.FC = () => {
     // Si ya había dado permiso, se vuelve a registrar este celular en el servidor (sin preguntar nada)
     if (!esAppNativa) syncPush();
 
-    // App Android: las alertas llegan como notificación del sistema (las trae el servicio de rastreo).
+    // App instalada: las alertas llegan como notificación del sistema (las trae el rastreo nativo).
     // Al tocarla se abre la app con la alerta: se muestra completa y queda marcada como leída.
     let revisarAlertaNativa: (() => void) | null = null;
+    let dejarDeEscuchar: (() => void) | null = null;
     if (esAppNativa) {
       revisarAlertaNativa = async () => {
         if (document.visibilityState !== 'visible') return;
@@ -579,9 +598,11 @@ export const WorkerPage: React.FC = () => {
       };
       revisarAlertaNativa();
       document.addEventListener('visibilitychange', revisarAlertaNativa);
+      if (esAppIOS) dejarDeEscuchar = nativeTracker.alTocarAlerta(revisarAlertaNativa);
     }
 
     return () => {
+      dejarDeEscuchar?.();
       socket.off('alerta', onSocketAlert);
       navigator.serviceWorker?.removeEventListener('message', onSwMessage);
       if (revisarAlertaNativa) document.removeEventListener('visibilitychange', revisarAlertaNativa);
@@ -607,7 +628,8 @@ export const WorkerPage: React.FC = () => {
         setGpsErrorMsg(null);
       } else {
         setGpsPermissionStatus('denied');
-        alert('Debe conceder el permiso de ubicación en su navegador para que el sistema detecte en qué estación se encuentra.');
+        const donde = esAppIOS ? 'a esta aplicación (en Ajustes)' : 'en su navegador';
+        alert(`Debe conceder el permiso de ubicación ${donde} para que el sistema detecte en qué estación se encuentra.`);
       }
     } catch (err: any) {
       setGpsErrorMsg(err.message);
@@ -646,8 +668,10 @@ export const WorkerPage: React.FC = () => {
       if (!r.precise) {
         alert(
           `Su ubicación no es lo bastante precisa (±${Math.round(r.coords.accuracy)} m). Se requiere ±${maxPrec} m o menos.\n\n` +
-            '• Active la ubicación de alta precisión (Android: Ajustes → Ubicación).\n' +
-            '• Permita la ubicación "precisa" para el navegador, no la "aproximada".\n' +
+            (esAppIOS
+              ? '• En Ajustes, abra esta aplicación → Ubicación y active "Ubicación precisa".\n'
+              : '• Active la ubicación de alta precisión (Android: Ajustes → Ubicación).\n' +
+                '• Permita la ubicación "precisa" para el navegador, no la "aproximada".\n') +
             '• Salga a un lugar abierto, lejos de techos y paredes.\n\nLuego intente de nuevo.'
         );
         return false;
@@ -761,7 +785,8 @@ export const WorkerPage: React.FC = () => {
       } catch {
         /* se prueba con la lectura de la verificación previa */
       }
-      if (!pos && currentCoords && currentCoords.accuracy <= maxPrec && Date.now() - currentCoords.timestamp <= 45000) {
+      // El servidor rechaza lecturas de más de 30 s: una anterior solo sirve si es más reciente que eso
+      if (!pos && currentCoords && currentCoords.accuracy <= maxPrec && Date.now() - currentCoords.timestamp <= 25000) {
         pos = currentCoords;
       }
       if (!pos) {
@@ -769,7 +794,7 @@ export const WorkerPage: React.FC = () => {
         alert(
           `Su ubicación no es lo bastante precisa. Se requiere ±${maxPrec} m o menos.\n\n` +
             '• Active la ubicación de alta precisión en su celular.\n' +
-            '• Permita la ubicación "precisa" para el navegador.\n' +
+            `• Permita la ubicación "precisa" ${esAppIOS ? 'a esta aplicación' : 'para el navegador'}.\n` +
             '• Salga a un lugar abierto, lejos de techos y paredes.\n\nLuego intente de nuevo.'
         );
         return;
@@ -1293,14 +1318,46 @@ export const WorkerPage: React.FC = () => {
                   Apagó la ubicación del celular durante su turno. Mientras esté apagada no se registra su recorrido. Este
                   aviso queda registrado y se informa a su supervisor.
                 </p>
+                {esAppIOS && (
+                  <p className="mt-2 text-sm text-slate-700">
+                    En Ajustes → Privacidad y seguridad → Localización, actívela y deje esta aplicación en «Siempre».
+                  </p>
+                )}
                 <button
                   type="button"
                   className="btn btn-primary mt-4 w-full py-3 text-base"
                   onClick={() => nativeTracker.abrirAjustesUbicacion().catch(() => {})}
                 >
-                  Abrir ajustes de ubicación
+                  {esAppIOS ? 'Abrir ajustes' : 'Abrir ajustes de ubicación'}
                 </button>
                 <p className="mt-2 text-center text-xs text-slate-500">Esta pantalla se cierra sola al activarla.</p>
+              </div>
+            </div>
+          )}
+
+          {/* Falta el permiso "todo el tiempo": se bloquea hasta corregirlo. La salida sí se puede registrar. */}
+          {permisoIncompleto && !isCameraOpen && !actionLoading && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/90 p-4" role="alertdialog" aria-modal="true">
+              <div className="w-full max-w-sm border-t-4 border-t-red-700 bg-white p-5 shadow-xl">
+                <div className="flex items-center gap-2 text-red-800">
+                  <AlertTriangle className="h-6 w-6 flex-shrink-0" />
+                  <h2 className="text-lg font-semibold">{esAppIOS ? 'Permita la ubicación "Siempre"' : 'Permita la ubicación todo el tiempo'}</h2>
+                </div>
+                <p className="mt-2 text-sm text-slate-700">
+                  Con el permiso actual puede no registrarse su recorrido. En Ubicación elija{' '}
+                  <strong>{esAppIOS ? '"Siempre"' : '"Permitir todo el tiempo"'}</strong> y deje activada la ubicación{' '}
+                  <strong>precisa</strong>. Este aviso queda registrado y se informa a la oficina.
+                </p>
+                <button type="button" className="btn btn-primary mt-4 w-full py-3 text-base" onClick={corregirPermiso}>
+                  Cambiar permiso
+                </button>
+                <button type="button" className="btn btn-secondary mt-2 w-full" onClick={() => nativeTracker.abrirAjustes().catch(() => {})}>
+                  Abrir ajustes de la aplicación
+                </button>
+                <button type="button" className="btn btn-secondary mt-2 w-full" onClick={() => iniciarMarcacion('salida')}>
+                  Registrar salida
+                </button>
+                <p className="mt-2 text-center text-xs text-slate-500">Esta pantalla se cierra sola al corregirlo.</p>
               </div>
             </div>
           )}
@@ -1350,8 +1407,9 @@ export const WorkerPage: React.FC = () => {
                     <>
                       <h3 className="text-sm font-semibold text-slate-900">Rastreo activo en segundo plano</h3>
                       <p className="mt-0.5 text-sm text-slate-600">
-                        Su ubicación se registra durante el turno aunque apague la pantalla o cierre esta aplicación. No
-                        desinstale ni detenga la aplicación hasta registrar su salida.
+                        {esAppIOS
+                          ? 'Su ubicación se registra durante el turno aunque apague la pantalla o use otras aplicaciones. No cierre esta aplicación deslizándola hacia arriba hasta registrar su salida.'
+                          : 'Su ubicación se registra durante el turno aunque apague la pantalla o cierre esta aplicación. No desinstale ni detenga la aplicación hasta registrar su salida.'}
                         {/* se envía una vez por minuto: unos pocos puntos en espera son normales */}
                         {estadoNativo && estadoNativo.pendientes > 12
                           ? ` Sin conexión: ${estadoNativo.pendientes} puntos pendientes de enviar.`

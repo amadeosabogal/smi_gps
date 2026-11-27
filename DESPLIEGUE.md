@@ -155,6 +155,26 @@ El aviso existe solo desde la versión 1.0.1 de la app: quien tenga la 1.0.0 deb
 
 **Enlace de descarga y web instalada:** el service worker de la web respondía con la app a cualquier dirección, también a `/descargas/smi-gps.apk`: en un navegador que ya había entrado a la web no se descargaba nada. Se excluyen `/descargas/` y `/api/` (`navigateFallbackDenylist` en `client/vite.config.ts`). **Despliega la web antes de publicar un APK nuevo**; los teléfonos con la web ya guardada deben aceptar el aviso de actualización o cerrar todas las pestañas del sitio (mientras tanto sirve una pestaña de incógnito).
 
+**Aviso de nueva versión en iPhone:** funciona igual, con el mismo `version.json`, usando el bloque `ios`. El botón dice **Actualizar** y abre la App Store o TestFlight (el enlace debe ser `https`).
+```json
+{
+  "versionCode": 2,
+  "versionName": "1.0.1",
+  "url": "https://asistencia.smi-peru.com/descargas/smi-gps.apk",
+  "ios": {
+    "versionCode": 2,
+    "versionName": "1.0.1",
+    "minVersionCode": 1,
+    "url": "https://apps.apple.com/app/idNUMERO_DE_LA_APP",
+    "notas": "Qué cambia en esta versión"
+  }
+}
+```
+- `ios.versionCode` es el número de **Build** de Xcode (`CURRENT_PROJECT_VERSION`), no el "Version". Súbelo en cada envío a Apple y usa solo números enteros.
+- Publica el bloque `ios` **después** de que la versión ya esté disponible para descargar.
+- No pongas en `ios.minVersionCode` un número mayor que el de la versión que Apple está revisando: el revisor vería el aviso obligatorio.
+- El servidor debe tener este cambio (`git pull` y reiniciar con PM2) para enviar el bloque `ios`; uno anterior simplemente no muestra el aviso en iPhone.
+
 ### Un turno, un dispositivo
 Cada instalación de la app (o navegador) genera un identificador y lo envía en la cabecera `X-Device-Id`. Al marcar la entrada, el turno queda **atado a ese dispositivo** (`RegistroAsistencia.dispositivo_id`): solo él puede enviar la ubicación del turno. Si el mismo usuario abre la app en otro teléfono, ese teléfono muestra "Su turno está activo en otro dispositivo", **no registra ubicación** y su servicio se detiene; el servidor responde `409/403 OTRO_DISPOSITIVO`. Así dos celulares con el mismo usuario no mezclan sus puntos y no se puede dejar un teléfono quieto mientras el trabajador se mueve con otro.
 
@@ -213,6 +233,18 @@ Antes de la primera entrada aparece un **asistente**: el trabajador toca **Activ
 - La batería es obligatoria solo en las marcas que cierran apps (si no, se puede saltar). Samsung y Xiaomi tienen un último paso opcional, que la app no puede comprobar.
 - También se puede tocar el círculo de un paso en la pantalla inicial. Al terminar dice "Listo" y continúa con la entrada.
 - Los dibujos son orientativos: cada marca y versión de Android muestra las ventanas algo distinto. **Probar en celulares reales.**
+
+### Permiso "todo el tiempo" quitado durante el turno (app 1.0.8, Android y iPhone)
+Si durante un turno el teléfono deja de permitir la ubicación **"todo el tiempo"** (iPhone: **"Siempre"**) o la ubicación **precisa**, por ejemplo al elegir "solo mientras se usa la app":
+- La app muestra una pantalla que bloquea, con **Cambiar permiso**, **Abrir ajustes** y **Registrar salida** (la salida sí se puede marcar). Se cierra sola al corregirlo.
+- El teléfono avisa con una notificación y lo informa al servidor, que registra `PERMISO_UBICACION` y, al corregirlo, `PERMISO_RESTABLECIDO` en Alertas de fraude. La tarjeta del trabajador dice `Sin permiso "todo el tiempo"`.
+- **Hora:** es la de la detección, que puede ser posterior al cambio. Android cierra la app al quitar un permiso; una alarma lo revisa cada 15 minutos aprox. (más en teléfonos con ahorro de batería; si se fuerza la detención de la app, recién al abrirla). En iPhone se detecta cuando iOS vuelve a activar la app.
+- Necesita el servidor actualizado: uno anterior ignora estos avisos.
+
+### iPhone con las mismas novedades
+La rama une la app de iPhone con las novedades 1.0.8: guía de gestos, autorización de la oficina, recordatorios, asistente de permisos (pasos propios de iPhone; las notificaciones son opcionales), aviso de permiso quitado y ahorro de batería (envíos cada minuto; quieto, un punto por minuto con precisión de ~10 m en vez de la máxima).
+- **Probado:** compila para el simulador y la lógica de reposo pasa pruebas; **falta probarlo en un iPhone real** (permisos, rastreo con pantalla apagada y batería).
+- Para publicarlo en TestFlight o App Store hay que subir el número de **Build** en Xcode y publicar el bloque `ios` de `version.json`.
 
 ### Almuerzo dentro del turno (app 1.0.3 o posterior y web)
 Durante un turno activo el trabajador toca **Iniciar almuerzo** y, al volver, **Terminar almuerzo**; ambos momentos exigen verificación facial con prueba de vida y guardan foto y similitud. El **GPS NO se detiene**: sigue registrándose igual (en la web y en el servicio de Android). Las horas del turno **no se descuentan** (solo se registra el almuerzo).

@@ -73,6 +73,40 @@ final class AlertNotifier {
         } catch (Exception ignore) {}
     }
 
+    private static final int ID_PERMISO = 9003;
+
+    /** Durante el turno se quitó el permiso "todo el tiempo" o la ubicación precisa: aviso que abre la aplicación. */
+    static void permisoQuitado(Context ctx) {
+        asegurarCanal(ctx);
+        String texto = "Su ubicación no está en \"Permitir todo el tiempo\" y precisa. Abra la aplicación y corríjalo. Se informa a la oficina.";
+        Intent abrir = new Intent(ctx, MainActivity.class)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent pi = PendingIntent.getActivity(ctx, ID_PERMISO, abrir, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification n = new NotificationCompat.Builder(ctx, CHANNEL_ID)
+                .setContentTitle("Corrija el permiso de ubicación")
+                .setContentText(texto)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(texto))
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setDefaults(NotificationCompat.DEFAULT_SOUND | NotificationCompat.DEFAULT_VIBRATE)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+                .build();
+        try {
+            ((NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE)).notify(ID_PERMISO, n);
+        } catch (SecurityException ignore) {
+            // sin permiso de notificaciones: la aplicación lo muestra al abrirse
+        }
+    }
+
+    static void permisoRestablecido(Context ctx) {
+        try {
+            ((NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(ID_PERMISO);
+        } catch (Exception ignore) {}
+    }
+
     private static void asegurarCanal(Context ctx) {
         NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL_ID) == null) {

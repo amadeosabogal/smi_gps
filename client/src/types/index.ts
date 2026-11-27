@@ -141,6 +141,7 @@ export interface DatosTrabajadorEnVivo {
   tiene_foto_ingreso?: boolean;
   push_activo?: boolean | number; // ¿tiene las alertas activadas en su celular?
   segundos_sin_ping?: number | null; // antigüedad de la última señal GPS recibida
+  permiso_quitado?: number; // 1 = su celular dejó de permitir la ubicación "todo el tiempo" en este turno
   gps_imprecisa?: boolean; // el celular está enviando una ubicación demasiado imprecisa
   en_almuerzo?: boolean; // está en su almuerzo (el GPS sigue registrándose)
   almuerzo_segundos?: number | null; // desde hace cuánto

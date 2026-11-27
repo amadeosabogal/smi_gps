@@ -11,6 +11,21 @@ export interface CoordsData {
   timestamp: number;
 }
 
+// El plugin nativo responde en inglés: se traduce según su código antes de mostrarlo al trabajador.
+const MENSAJES_NATIVOS: Record<string, string> = {
+  'OS-PLUG-GLOC-0003': 'Permiso denegado. Autorice la ubicación para esta aplicación en los Ajustes del celular.',
+  'OS-PLUG-GLOC-0007': 'La ubicación del celular está desactivada. Actívela en los Ajustes.',
+  'OS-PLUG-GLOC-0008': 'El uso de la ubicación está restringido en este celular. Revise los Ajustes.',
+  'OS-PLUG-GLOC-0010': 'No se pudo obtener la ubicación a tiempo. Salga a un lugar abierto e intente de nuevo.',
+};
+const errorNativo = (err: any): Error =>
+  new Error(MENSAJES_NATIVOS[err?.code] || 'No se pudo obtener la ubicación GPS. Intente de nuevo.');
+
+// En iPhone la primera lectura precisa tarda varios segundos y el sistema entrega antes posiciones guardadas
+const esIOS = () => Capacitor.getPlatform() === 'ios';
+const ESPERA_IOS_MS = 12000;
+const ANTIGUEDAD_MAXIMA_IOS_MS = 10000;
+
 class GeolocationService {
   private watchId: string | number | null = null;
   private isTracking = false;
@@ -95,7 +110,7 @@ class GeolocationService {
 
   public async getCurrentPosition(options?: { allowCached?: boolean; maxWaitMs?: number }): Promise<CoordsData> {
     const allowCached = options?.allowCached ?? true;
-    const maxWaitMs = options?.maxWaitMs ?? 4000;
+    const maxWaitMs = options?.maxWaitMs ?? (esIOS() ? ESPERA_IOS_MS : 4000);
 
     // Si ya tenemos coordenadas recientes (últimos 90s) y se permite caché, devolver inmediatamente (0ms)
     if (allowCached && this.lastKnownCoords && Date.now() - this.lastKnownCoords.timestamp < 90000) {
@@ -108,6 +123,8 @@ class GeolocationService {
         enableHighAccuracy: true,
         timeout: maxWaitMs,
         maximumAge: allowCached ? 60000 : 0,
+      }).catch((err) => {
+        throw errorNativo(err);
       });
       const coords: CoordsData = {
         latitude: pos.coords.latitude,
@@ -212,10 +229,13 @@ class GeolocationService {
           this.lastKnownCoords = best;
           resolve({ coords: best, precise });
         } else {
-          reject(new Error('No se pudo obtener la ubicación GPS. Active la ubicación en su celular y permita el acceso al navegador.'));
+          const destino = this.isNative() ? 'a esta aplicación' : 'al navegador';
+          reject(new Error(`No se pudo obtener la ubicación GPS. Active la ubicación en su celular y permita el acceso ${destino}.`));
         }
       };
       const onReading = (c: CoordsData) => {
+        // Una posición guardada puede ser precisa pero vieja: el servidor la rechaza al marcar
+        if (esIOS() && Date.now() - c.timestamp > ANTIGUEDAD_MAXIMA_IOS_MS) return;
         if (!best || c.accuracy < best.accuracy) best = c;
         options.onProgress?.(c.accuracy);
         if (c.accuracy <= options.maxAccuracy) finish(true);
@@ -236,6 +256,8 @@ class GeolocationService {
             if (err) return onFail('No se pudo obtener la ubicación GPS.');
             if (pos) onReading(toCoords(pos));
           });
+          // Si ya se había terminado antes de conocer el identificador, se apaga ahora
+          if (finished) stop();
         });
         return;
       }

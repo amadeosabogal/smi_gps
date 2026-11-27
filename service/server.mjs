@@ -670,24 +670,30 @@ app.get('/api/health', (req, res) => {
   res.json({ estado: 'ok', fecha: new Date().toISOString() });
 });
 
-// Última versión de la app Android. Se lee de version.json (que se sube junto con el APK), así publicar una
+// Última versión de las apps (Android e iPhone). Se lee de version.json (junto al APK), así publicar una
 // versión nueva no requiere reiniciar el servidor. Es público: solo contiene el número de versión y el enlace.
 let versionAppCache = null; // { t, data }
-function leerVersionAndroid() {
+function validarVersion(j, enlaceValido) {
+  const url = typeof j?.url === 'string' ? j.url.trim() : '';
+  if (!Number.isInteger(j?.versionCode) || j.versionCode <= 0 || !enlaceValido.test(url) || url.length > 300) return null;
+  return {
+    versionCode: j.versionCode,
+    versionName: typeof j.versionName === 'string' ? j.versionName.slice(0, 20) : String(j.versionCode),
+    minVersionCode: Number.isInteger(j.minVersionCode) && j.minVersionCode > 0 ? j.minVersionCode : 0,
+    url,
+    notas: typeof j.notas === 'string' ? j.notas.slice(0, 200) : '',
+  };
+}
+// Un solo archivo por instalación: los datos de Android van en la raíz y los de iPhone dentro de "ios"
+function leerVersionesApp() {
   if (versionAppCache && Date.now() - versionAppCache.t < 30_000) return versionAppCache.data;
-  let data = null;
+  let data = { android: null, ios: null };
   try {
     const j = JSON.parse(fs.readFileSync(config.androidVersionFile, 'utf8'));
-    const url = typeof j.url === 'string' ? j.url.trim() : '';
-    if (Number.isInteger(j.versionCode) && j.versionCode > 0 && /^https?:\/\//.test(url) && url.length <= 300) {
-      data = {
-        versionCode: j.versionCode,
-        versionName: typeof j.versionName === 'string' ? j.versionName.slice(0, 20) : String(j.versionCode),
-        minVersionCode: Number.isInteger(j.minVersionCode) && j.minVersionCode > 0 ? j.minVersionCode : 0,
-        url,
-        notas: typeof j.notas === 'string' ? j.notas.slice(0, 200) : '',
-      };
-    }
+    data = {
+      android: validarVersion(j, /^https?:\/\//),
+      ios: validarVersion(j.ios, /^https:\/\//), // App Store o TestFlight
+    };
   } catch {
     /* sin archivo o con formato inválido: no se avisa de nada */
   }
@@ -696,7 +702,7 @@ function leerVersionAndroid() {
 }
 app.get('/api/app/version', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
-  res.json({ android: leerVersionAndroid() });
+  res.json(leerVersionesApp());
 });
 
 // Lista mínima para la pantalla de ingreso del trabajador (sin datos sensibles)
@@ -1813,6 +1819,7 @@ app.get('/api/dashboard/live', requireAuth(ROLES_STAFF), async (req, res) => {
       return {
         ...w,
         ...(pushTablasListas ? { push_activo: w.push_activo || appNativaActiva(w.usuario_id) ? 1 : 0 } : {}),
+        permiso_quitado: permisoQuitadoDesde.has(w.usuario_id) ? 1 : 0,
         en_almuerzo: Boolean(w.almuerzo_inicio),
         gps_imprecisa: Boolean(imp && ahoraMs - imp.t < 60_000),
       };
@@ -1982,6 +1989,7 @@ app.post('/api/attendance/check-in', requireAuth(ROLES_WORKER), async (req, res)
 
     lastPings.delete(usuarioId);
     gpsImprecisos.delete(usuarioId);
+    permisoQuitadoDesde.delete(usuarioId); // el aviso de permiso es de cada turno
     turnoCache.delete(usuarioId);
     const registro = sinFotos(registroResultado.recordset[0]);
     console.log(`🔔 [CHECK_IN] Usuario ${usuarioId} registró ENTRADA (similitud ${bio.sim}%).`);
@@ -2057,6 +2065,7 @@ app.post('/api/attendance/check-out', requireAuth(ROLES_WORKER), async (req, res
 
     lastPings.delete(usuarioId);
     gpsImprecisos.delete(usuarioId);
+    permisoQuitadoDesde.delete(usuarioId); // el aviso de permiso es de cada turno
     turnoCache.delete(usuarioId);
     const registroCompletado = sinFotos(resActualizacion.recordset[0]);
     console.log(`🔔 [CHECK_OUT] Usuario ${usuarioId} registró SALIDA.`);
@@ -2234,6 +2243,7 @@ app.post('/api/attendance/:id/force-checkout', requireAuth(ROLES_ADMIN), async (
 
     lastPings.delete(usuarioId);
     gpsImprecisos.delete(usuarioId);
+    permisoQuitadoDesde.delete(usuarioId); // el aviso de permiso es de cada turno
     turnoCache.delete(usuarioId);
     const asistencia = sinFotos(r.recordset[0]);
     console.log(`🛑 [SALIDA FORZADA] ${admin} cerró el turno ${id} de ${codigoTrabajador} ${nombre}: ${motivo}`);
@@ -2439,6 +2449,9 @@ const horaNegocio = (ms) =>
 const textoDuracion = (seg) => (seg < 90 ? `${Math.max(1, Math.round(seg))} s` : `${Math.round(seg / 60)} min`);
 // usuarioId -> ms en que el celular avisó que el trabajador apagó la ubicación (se borra al volver a encenderla)
 const gpsApagadoDesde = new Map();
+// usuarioId -> ms desde que su celular dejó de tener la ubicación "todo el tiempo" (se borra al restablecerla)
+const permisoQuitadoDesde = new Map();
+const EVENTOS_CELULAR = ['apagado', 'encendido', 'permiso_quitado', 'permiso_ok'];
 const gpsEventosVistos = new Map(); // "usuario:tipo:t" -> ms (evita registrar dos veces un aviso reenviado)
 
 // El servicio nativo avisa cuando el trabajador apaga o vuelve a encender la ubicación del celular. Cada aviso trae su
@@ -2463,7 +2476,7 @@ app.post('/api/location/gps-evento', requireTrackAuth, async (req, res) => {
 
     const ahora = Date.now();
     const validos = eventos
-      .filter((e) => e && (e.tipo === 'apagado' || e.tipo === 'encendido') && isNum(e.t) && e.t <= ahora + 60_000 && ahora - e.t <= BATCH_MAX_ANTIGUEDAD_MS)
+      .filter((e) => e && EVENTOS_CELULAR.includes(e.tipo) && isNum(e.t) && e.t <= ahora + 60_000 && ahora - e.t <= BATCH_MAX_ANTIGUEDAD_MS)
       .sort((a, b) => a.t - b.t);
     for (const [k, t] of gpsEventosVistos) if (ahora - t > 24 * 3600 * 1000) gpsEventosVistos.delete(k);
 
@@ -2482,6 +2495,27 @@ app.post('/api/location/gps-evento', requireTrackAuth, async (req, res) => {
           segundosAtras: seg,
         });
         if (ok) gpsApagadoDesde.set(usuarioId, ev.t);
+      } else if (ev.tipo === 'permiso_quitado') {
+        ok = await registrarFraude({
+          usuarioId,
+          tipoEvento: 'PERMISO_UBICACION',
+          similitud: 0,
+          notas: `Su celular ya no permite la ubicación "todo el tiempo" y precisa (detectado a las ${horaNegocio(ev.t)}). Mientras siga así puede no registrarse su recorrido.`,
+          segundosAtras: seg,
+        });
+        if (ok) permisoQuitadoDesde.set(usuarioId, ev.t);
+      } else if (ev.tipo === 'permiso_ok') {
+        const desde = isNum(ev.desde) && ev.desde < ev.t ? ev.desde : null;
+        ok = await registrarFraude({
+          usuarioId,
+          tipoEvento: 'PERMISO_RESTABLECIDO',
+          similitud: 0,
+          notas: desde
+            ? `Restableció el permiso de ubicación a las ${horaNegocio(ev.t)}. Estuvo sin él ${textoDuracion((ev.t - desde) / 1000)} (desde las ${horaNegocio(desde)}).`
+            : `Restableció el permiso de ubicación a las ${horaNegocio(ev.t)}.`,
+          segundosAtras: seg,
+        });
+        if (ok) permisoQuitadoDesde.delete(usuarioId);
       } else {
         const desde = isNum(ev.desde) && ev.desde < ev.t ? ev.desde : null;
         ok = await registrarFraude({
@@ -2530,6 +2564,8 @@ async function revisarSinSenal() {
       const apagado = gpsApagadoDesde.get(fila.usuario_id);
       const inicio = Date.now() - fila.seg * 1000;
       if (apagado && apagado >= inicio - 120_000) continue; // ya se avisó: apagó la ubicación
+      const sinPermiso = permisoQuitadoDesde.get(fila.usuario_id);
+      if (sinPermiso && sinPermiso >= inicio - 120_000) continue; // ya se avisó: quitó el permiso
       await registrarFraude({
         usuarioId: fila.usuario_id,
         tipoEvento: 'SIN_SENAL_GPS',
@@ -2537,7 +2573,7 @@ async function revisarSinSenal() {
         notas: `Sin recibir ubicación desde las ${horaNegocio(inicio)} (${textoDuracion(fila.seg)}). Posibles causas: sin internet, app cerrada, celular apagado o ubicación apagada sin conexión.`,
       });
     }
-    for (const [uid, t] of gpsApagadoDesde) if (Date.now() - t > 24 * 3600 * 1000) gpsApagadoDesde.delete(uid);
+    for (const mapa of [gpsApagadoDesde, permisoQuitadoDesde]) for (const [uid, t] of mapa) if (Date.now() - t > 24 * 3600 * 1000) mapa.delete(uid);
   } catch (err) {
     console.error('Error al revisar trabajadores sin señal:', err.message);
   }
