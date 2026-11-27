@@ -225,3 +225,21 @@ thead th {
   0%, 22%, 34%, 46%, 58%, 100% { transform: scaleY(1); }
   28%, 52% { transform: scaleY(0.1); }
 }
+
+/* Asistente de permisos: la opción que hay que tocar late */
+.toque-objetivo { animation: toque-objetivo 1.6s ease-in-out infinite; }
+.toque-dedo { animation: toque-dedo 1.6s ease-in-out infinite; }
+.toque-interruptor { animation: toque-interruptor 1.6s ease-in-out infinite; left: 1.5rem; }
+
+@keyframes toque-objetivo {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(242, 183, 5, 0.85); }
+  50% { box-shadow: 0 0 0 6px rgba(242, 183, 5, 0.15); }
+}
+@keyframes toque-dedo {
+  0%, 100% { transform: translate(6px, -20%) scale(1.15); opacity: 0.4; }
+  50% { transform: translate(0, -50%) scale(0.85); opacity: 1; }
+}
+@keyframes toque-interruptor {
+  0%, 25% { left: 0.25rem; }
+  50%, 100% { left: 1.5rem; }
+}

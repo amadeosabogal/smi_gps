@@ -208,7 +208,11 @@ En el panel, **Calendario y avisos → Recordatorios de marcación**, el adminis
 - **Orden:** desplegar el servidor y la web **antes** de repartir el APK 1.0.8; si no, el panel anterior marcaría "sin señal" a quien está quieto. No aplica a iPhone ni a la web (PWA).
 
 ### Pantalla de permisos (app Android 1.0.8)
-Tocar el círculo (o el texto) de un paso pendiente abre ese permiso en Android. El check aparece solo cuando el teléfono confirma que quedó concedido.
+Antes de la primera entrada aparece un **asistente**: el trabajador toca **Activar permisos** y la app pide un paso a la vez, con un dibujo de dónde tocar (`NativePermissionsModal.tsx`, `pasosPermisos.ts`).
+- Las ventanas de Android (ubicación precisa, notificaciones, batería) se abren solas al segundo y medio; para la ubicación encendida y **"Permitir todo el tiempo"** hay que tocar **Abrir ajustes**. Lo ya concedido se salta.
+- La batería es obligatoria solo en las marcas que cierran apps (si no, se puede saltar). Samsung y Xiaomi tienen un último paso opcional, que la app no puede comprobar.
+- También se puede tocar el círculo de un paso en la pantalla inicial. Al terminar dice "Listo" y continúa con la entrada.
+- Los dibujos son orientativos: cada marca y versión de Android muestra las ventanas algo distinto. **Probar en celulares reales.**
 
 ### Almuerzo dentro del turno (app 1.0.3 o posterior y web)
 Durante un turno activo el trabajador toca **Iniciar almuerzo** y, al volver, **Terminar almuerzo**; ambos momentos exigen verificación facial con prueba de vida y guardan foto y similitud. El **GPS NO se detiene**: sigue registrándose igual (en la web y en el servicio de Android). Las horas del turno **no se descuentan** (solo se registra el almuerzo).
